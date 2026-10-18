@@ -30,7 +30,7 @@ changed and ask before starting the next. Do not chain unrelated changes.
 ## Project conventions
 
 - Conventional Commits; LF line endings (see `.gitattributes`).
-- Run `npm run typecheck && npm run build && npm run smoke` before committing.
+- Run `npm run typecheck && npm test` before committing (`npm test` builds first).
 - Keep `docs/plan.md` — the canonical plan — updated as work lands.
 
 ## Reporting

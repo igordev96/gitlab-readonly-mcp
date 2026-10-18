@@ -7,7 +7,8 @@ branches that are not checked out locally — without ever touching your working
 tree. Content is read from local bare mirrors that the server keeps in a cache
 directory.
 
-> Phase 1 implementation. Currently exposes a single tool: `get_file`.
+> Phase 2a implementation. Currently exposes a single tool: `get_file`, backed by
+> local bare mirrors that keep themselves fresh (TTL + fetch-on-miss).
 > See the plan at [`docs/plan.md`](docs/plan.md) — the canonical, in-repo design
 > document.
 
@@ -43,6 +44,8 @@ All configuration is via environment variables.
 | `GITLAB_MCP_CACHE` | no | Cache root for mirrors. Defaults to `%LOCALAPPDATA%\gitlab-readonly-mcp` (or `~/.cache/...` elsewhere). |
 | `GITLAB_CA_INFO` | no | Path to a CA bundle, if the server uses a private CA. |
 | `GITLAB_GIT_BIN` | no | Git executable. Defaults to `git`. |
+| `GITLAB_FETCH_MODE` | no | `ttl` (default) fetches only when a mirror is older than the TTL. `always` fetches before every read. |
+| `GITLAB_FETCH_TTL_SECONDS` | no | Age in seconds after which a mirror counts as stale. Default `600` (10 minutes). `0` behaves like `always`. |
 
 ## Wire into OpenCode
 
@@ -89,14 +92,36 @@ gitlab_get_file(project="group/sub/repo", ref="fix/PROJ-7608", path="src/index.t
 Results are wrapped so provenance is always visible:
 
 ```
-<file project="group/sub/repo" ref="fix/PROJ-7608" commit="abc123…" path="src/index.tsx">
+<file project="group/sub/repo" ref="fix/PROJ-7608" commit="abc123…" path="src/index.tsx" synced_at="2026-10-18T09:12:44.318Z">
 …file contents…
 </file>
 ```
 
+`commit` is the exact commit the content came from, and `synced_at` is when the
+local mirror was last refreshed — so the answer states how fresh it is instead
+of quietly going stale.
+
 Missing refs and missing paths return a clean error instead of a git stack trace.
 Binary files are refused. Output is capped (default 200 KB, override with
 `max_bytes`).
+
+## Freshness
+
+Mirrors are cloned on first use and refreshed automatically:
+
+- **TTL** — a read refreshes the mirror when it is older than
+  `GITLAB_FETCH_TTL_SECONDS` (default 10 minutes).
+- **Fetch-on-miss** — a ref that does not resolve locally triggers one extra
+  fetch and retry, so a branch created moments ago is found without a manual
+  sync. (If the read already fetched, no second fetch is attempted.)
+- **`always`** — set `GITLAB_FETCH_MODE=always` to fetch before every read when
+  correctness matters more than latency.
+- **Serialised** — fetches are serialised per project, so parallel tool calls
+  never run overlapping fetches for the same repo.
+
+Refresh timestamps are tracked in memory and fall back to the mirror's
+`FETCH_HEAD` mtime, which survives a server restart. Note that `git clone
+--mirror` does not create `FETCH_HEAD`; the clone time is recorded instead.
 
 ## Security
 
@@ -111,16 +136,38 @@ Binary files are refused. Output is capped (default 200 KB, override with
 ## Development
 
 ```powershell
-npm run typecheck
-npm run build
-npm run smoke     # runs against a fixture mirror; no network or token needed
+npm run typecheck   # src/ and test/
+npm test            # builds, then runs the test suite
+```
+
+`npm test` rebuilds first (the compiled-entry-point test runs `dist/`), then runs
+every `test/**/*.test.ts` through Node's built-in test runner via `tsx`. The
+tests import `src/` directly, so there is no way to accidentally test a stale
+build.
+
+Tests wipe and rebuild a throwaway "GitLab" under the system temp directory — a
+working repo plus a bare repo it pushes to — so they exercise real clone and
+fetch behaviour, including freshness, without any network access or token. Each
+test file gets its own fixture directory, so files can run in parallel.
+
+```
+src/                    server source
+test/
+  fixture.ts            builds the throwaway "GitLab"
+  store.test.ts         mirror resolution, guards, freshness
+  protocol.test.ts      the MCP surface over an in-memory transport
+  startup.test.ts       the compiled entry point over real stdio
+tsconfig.json           typecheck: src/ + test/, no emit
+tsconfig.build.json     emit: src/ only → dist/
 ```
 
 ## Roadmap
 
 - **Phase 1 (done):** stdio server + `get_file`.
-- **Phase 2:** repo registry (`add_repo`/`list_repos`/`sync_repo`), prefer local
-  clones, `list_tree`, `list_refs`, `resolve_ref`, freshness policy (TTL +
-  fetch-on-miss).
+- **Phase 2a (done):** freshness — TTL, fetch-on-miss, per-project fetch lock,
+  `synced_at` provenance.
+- **Phase 2b:** `list_tree`, `list_refs`, `resolve_ref`.
+- **Phase 2c:** repo registry (`add_repo`/`list_repos`/`sync_repo`), prefer local
+  clones, `manual` freshness mode.
 - **Phase 3:** `compare`, `diff_file`, `log`, `get_commit`, `blame`.
 - **Phase 4:** `search` (`git grep`), `pickaxe`, GitLab URL parser, polish.
