@@ -9,9 +9,12 @@
 > should not grow as phases land.
 
 Status: phases 0, 1, 2a and 2b complete; newest tag `v0.4.0` (`list_tree`).
-All four read tools — `list_refs`, `resolve_ref`, `list_tree`, `get_file` — are
-implemented; 2b-1 and 2b-2 have not yet been exercised against the real GitLab.
-Next: 2c. Detail behind the tags: `history.md`.
+All four read tools are implemented and have been exercised against the real
+GitLab. That live check found a freshness bug — a rejected fetch still advancing
+the sync clock — and it is now fixed: the clock reads a stamp written only on
+success, and a refresh that fails falls back to the cached mirror and says so.
+Both are awaiting a tag; the token that the live check saw rejected is still
+open. See `history.md`.
 Owner: igordev96
 Author: OpenCode
 
@@ -153,9 +156,17 @@ old branch. Mitigations:
 >   queued behind an in-flight fetch do not fetch again.
 > - If the TTL step already fetched, a missing ref does not trigger a second
 >   fetch; if it did not fetch, the miss triggers exactly one.
-> - The sync clock is in-memory, falling back to the mirror's `FETCH_HEAD` mtime
->   so it survives a restart. `git clone --mirror` does **not** write
->   `FETCH_HEAD` (verified), so the clone time is recorded explicitly.
+> - The sync clock lives in a stamp file inside the mirror
+>   (`mcp-last-sync`, epoch ms) and is written **only after a fetch succeeds**,
+>   so it survives a restart without a failure ever advancing it. `git clone
+>   --mirror` writes no `FETCH_HEAD` (verified), so a clone records itself too.
+>   git's own `FETCH_HEAD` is deliberately not trusted: git stamps it before a
+>   fetch fails, which made a rejected fetch look like a fresh sync.
+> - A refresh that fails does not fail the read. The cached mirror answers, and
+>   the result reports the reason next to `syncedAt`, so staleness stays visible
+>   instead of turning into an outage. A ref that does not resolve through a
+>   failed refresh says so — otherwise "not found" would read as proof of
+>   absence when all it proves is that the mirror is out of date.
 
 ### 3.5 Local-clone handling
 

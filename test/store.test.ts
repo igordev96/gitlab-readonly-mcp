@@ -131,6 +131,150 @@ describe("freshness", () => {
     const result = await zero.readFile("demo", "main", "src/index.tsx");
     assert.equal(result.fetched, true);
   });
+
+  it("records a successful sync on disk, so it survives a restart", async () => {
+    const cache = path.join(fixture.root, "cache-stamp");
+    const git = new Git({ bin: "git" });
+    const first = new RepoStore(makeConfig({ cacheDir: cache }), git);
+    const cloned = await first.readFile("demo", "main", "src/index.tsx");
+    assert.ok(cloned.syncedAt instanceof Date, "a clone is itself a sync");
+    const t0 = cloned.syncedAt?.getTime();
+    assert.ok(t0, "expected a sync time from the clone");
+
+    const stamp = path.join(first.mirrorPath("demo"), "mcp-last-sync");
+    assert.equal(Number(fs.readFileSync(stamp, "utf8").trim()), t0, "stamp holds the sync time");
+
+    // A second store starts with an empty in-memory clock, so the time it
+    // reports can only have come from disk.
+    const restarted = new RepoStore(makeConfig({ cacheDir: cache }), git);
+    const second = await restarted.readFile("demo", "main", "src/index.tsx");
+    assert.equal(second.fetched, false, "a restart must not force a fetch within the TTL");
+    assert.equal(second.syncedAt?.getTime(), t0, "the sync time should survive the restart");
+  });
+
+  it("does not record a sync when the fetch itself fails", async () => {
+    const cache = path.join(fixture.root, "cache-failed-fetch");
+    const git = new Git({ bin: "git" });
+    const first = new RepoStore(makeConfig({ cacheDir: cache }), git);
+    const t0 = (await first.readFile("demo", "main", "src/index.tsx")).syncedAt?.getTime();
+    assert.ok(t0);
+
+    // An unreachable remote fails the fetch, exactly as a rejected token does.
+    const dir = first.mirrorPath("demo");
+    const broken = await git.run(
+      ["remote", "set-url", "origin", pathToFileURL(path.join(fixture.root, "gone.git")).href],
+      { gitDir: dir },
+    );
+    assert.equal(broken.code, 0);
+
+    const forced = new RepoStore(makeConfig({ cacheDir: cache, fetchMode: "always" }), git);
+    const result = await forced.readFile("demo", "main", "src/index.tsx");
+
+    // The read survives on the cache, and says why it could not do better.
+    assert.match(result.refreshError ?? "", /Failed to fetch/);
+    assert.equal(result.fetched, false, "nothing was fetched");
+    assert.equal(
+      Number(fs.readFileSync(path.join(dir, "mcp-last-sync"), "utf8").trim()),
+      t0,
+      "a failed fetch must leave the last successful sync time alone",
+    );
+  });
+
+  it("ignores a FETCH_HEAD stamped by a failed fetch", async () => {
+    const cache = path.join(fixture.root, "cache-fetchhead");
+    const git = new Git({ bin: "git" });
+    const first = new RepoStore(makeConfig({ cacheDir: cache }), git);
+    const t0 = (await first.readFile("demo", "main", "src/index.tsx")).syncedAt?.getTime();
+    assert.ok(t0);
+
+    // What git leaves behind when it stamps FETCH_HEAD and then fails: zero
+    // bytes, written now. It must not be mistaken for a sync.
+    fs.writeFileSync(path.join(first.mirrorPath("demo"), "FETCH_HEAD"), "", "utf8");
+
+    const restarted = new RepoStore(makeConfig({ cacheDir: cache }), git);
+    const after = await restarted.readFile("demo", "main", "src/index.tsx");
+    assert.equal(after.fetched, false, "a stamped FETCH_HEAD should not count as a fresh sync");
+    assert.equal(after.syncedAt?.getTime(), t0, "the clock must not come from FETCH_HEAD");
+  });
+});
+
+describe("a refresh that fails", () => {
+  /** Clone with the remote reachable, then cut that mirror off from its remote. */
+  async function cutOffMirror(cacheDir: string, git: Git): Promise<{ dir: string; t0: number }> {
+    const warm = new RepoStore(makeConfig({ cacheDir }), git);
+    const first = await warm.readFile("demo", "main", "src/index.tsx");
+    const t0 = first.syncedAt?.getTime();
+    assert.ok(t0, "expected the clone to record a sync time");
+
+    const dir = warm.mirrorPath("demo");
+    const moved = await git.run(
+      ["remote", "set-url", "origin", pathToFileURL(path.join(fixture.root, "gone.git")).href],
+      { gitDir: dir },
+    );
+    assert.equal(moved.code, 0, "expected to be able to break the remote");
+    return { dir, t0 };
+  }
+
+  it("serves the cached mirror and reports why, rather than failing the read", async () => {
+    const cache = path.join(fixture.root, "cache-degraded");
+    const git = new Git({ bin: "git" });
+    const { t0 } = await cutOffMirror(cache, git);
+
+    const offline = new RepoStore(makeConfig({ cacheDir: cache, fetchMode: "always" }), git);
+    const result = await offline.readFile("demo", "main", "src/index.tsx");
+
+    assert.match(result.content, /export const hello/, "the cached copy still answers");
+    assert.equal(result.fetched, false, "nothing was fetched");
+    assert.match(result.refreshError ?? "", /Failed to fetch/, "the failure is reported");
+    assert.equal(result.syncedAt?.getTime(), t0, "syncedAt still names the last real sync");
+  });
+
+  it("admits that a missing ref may only be missing because of it", async () => {
+    const cache = path.join(fixture.root, "cache-degraded-miss");
+    const git = new Git({ bin: "git" });
+    await cutOffMirror(cache, git);
+
+    // A branch pushed after the mirror was cloned: fetch-on-miss is exactly the
+    // mechanism that would find it, and it is the one thing that cannot run.
+    addBranchWithFile(
+      fixture.work,
+      "feature/after-clone",
+      "src/late.ts",
+      "export const late = true;\n",
+      "late branch",
+    );
+
+    const offline = new RepoStore(makeConfig({ cacheDir: cache }), git);
+    await assert.rejects(
+      () => offline.readFile("demo", "feature/after-clone", "src/late.ts"),
+      (error: unknown) => {
+        assert.ok(error instanceof NotFoundError, "expected a not-found error");
+        assert.match(error.message, /Ref not found/);
+        assert.match(
+          error.message,
+          /could not be refreshed/,
+          "a missing ref must not be presented as proof of absence",
+        );
+        return true;
+      },
+    );
+  });
+
+  it("reports the failure from a ref listing too", async () => {
+    const cache = path.join(fixture.root, "cache-degraded-refs");
+    const git = new Git({ bin: "git" });
+    const { t0 } = await cutOffMirror(cache, git);
+
+    const offline = new RepoStore(makeConfig({ cacheDir: cache, fetchMode: "always" }), git);
+    const listed = await offline.listRefs("demo", { kind: "branches" });
+
+    assert.ok(
+      listed.refs.some((entry) => entry.name === "main"),
+      "the cached ref list still answers",
+    );
+    assert.match(listed.refreshError ?? "", /Failed to fetch/);
+    assert.equal(listed.syncedAt?.getTime(), t0);
+  });
 });
 
 describe("failure reporting", () => {

@@ -168,9 +168,19 @@ anything is missing. So `list_refs` reports `synced_at` and leaves it at that.
 `resolve_ref` is the way to check one specific ref, because it does refresh on a
 miss.
 
-Refresh timestamps are tracked in memory and fall back to the mirror's
-`FETCH_HEAD` mtime, which survives a server restart. Note that `git clone
---mirror` does not create `FETCH_HEAD`; the clone time is recorded instead.
+Refresh timestamps are kept in memory and written to a stamp file inside the
+mirror (`mcp-last-sync`), so they survive a server restart. The stamp is written
+only after a fetch **succeeds** — git's own `FETCH_HEAD` is not used, because git
+stamps it before a fetch fails, which would make a rejected fetch indistinguishable
+from a fresh sync.
+
+**A refresh that fails does not fail the read.** When the mirror cannot be
+reached, or the token is rejected, the cached mirror answers and the result says
+so: `refresh_failed="true"` in the header and a `[refresh failed: …]` note giving
+the reason, beside a `synced_at` that still names the last *successful* sync. The
+one thing it will not do is present cached data as fresh. A ref that is missing
+*and* was looked for through a failed refresh says so as well, because then a
+missing ref is not evidence that it does not exist.
 
 ## Troubleshooting
 
@@ -184,6 +194,7 @@ needed to find out what happened.
 | *GitLab could not find this project* | Check the project path (`group/subgroup/repo`) and the token's access to it. |
 | *TLS verification failed* | The server uses a private CA; point `GITLAB_CA_INFO` at the CA bundle. |
 | *Could not reach GitLab* | Network or VPN. |
+| `[refresh failed: …]` in a result | The mirror could not be refreshed, so the answer came from the cache as of `synced_at`. The note says why; the causes are the same as for a failed read. |
 
 The credential case is worth one extra note: **a running MCP server keeps the
 token it started with.** Editing `GITLAB_TOKEN` does nothing to a server that is
@@ -244,7 +255,7 @@ tsconfig.build.json     emit: src/ only → dist/
 
 - **Phase 1 (done):** stdio server + `get_file`.
 - **Phase 2a (done):** freshness — TTL, fetch-on-miss, per-project fetch lock,
-  `synced_at` provenance.
+  `synced_at` provenance, and a failed refresh that serves the cache and says so.
 - **Phase 2b (done):** `list_refs`, `resolve_ref` (both with close-match hints)
   and `list_tree`.
 - **Phase 2c:** repo registry (`add_repo`/`list_repos`/`sync_repo`), prefer local

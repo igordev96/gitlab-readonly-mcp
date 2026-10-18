@@ -8,7 +8,7 @@ import {
   type RepoStore,
   type TreeListResult,
 } from "../repoStore.js";
-import { NO_PROJECT, errorResult, failureMessage, textResult } from "./result.js";
+import { NO_PROJECT, errorResult, failureMessage, refreshFailedNote, textResult } from "./result.js";
 
 const DEFAULT_MAX_BYTES = 200_000;
 const HARD_MAX_BYTES = 20_000_000;
@@ -24,6 +24,7 @@ export function formatTree(result: TreeListResult): string {
     `count="${result.entries.length}"`,
     result.total !== result.entries.length ? `total="${result.total}"` : undefined,
     result.syncedAt ? `synced_at="${result.syncedAt.toISOString()}"` : undefined,
+    result.refreshError ? 'refresh_failed="true"' : undefined,
     result.truncated ? 'truncated="true"' : undefined,
   ]
     .filter((value): value is string => value !== undefined)
@@ -34,9 +35,10 @@ export function formatTree(result: TreeListResult): string {
   );
 
   const body = rows.length > 0 ? rows.join("\n") : "(empty)";
-  const footer = result.truncated
-    ? `\n[truncated: showing ${result.entries.length} of ${result.total} entries]`
-    : "";
+  const footer =
+    (result.truncated
+      ? `\n[truncated: showing ${result.entries.length} of ${result.total} entries]`
+      : "") + refreshFailedNote(result.refreshError);
 
   return `<tree ${attributes}>\n${body}${footer}\n</tree>`;
 }
@@ -50,7 +52,8 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
         "Return the contents of a file at a given branch, tag, or commit WITHOUT checking it out. " +
         "Use this to inspect files on a branch other than the one currently checked out. " +
         "The repository is mirrored locally on first use and refreshed when it goes stale; " +
-        "the result reports the resolved commit and the mirror's last sync time.",
+        "the result reports the resolved commit and the mirror's last sync time. If the mirror " +
+        "cannot be refreshed, the cached copy answers and the result says the refresh failed.",
       inputSchema: {
         ref: z
           .string()
@@ -96,6 +99,7 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
           `commit="${result.commit}"`,
           `path="${result.path}"`,
           result.syncedAt ? `synced_at="${result.syncedAt.toISOString()}"` : undefined,
+          result.refreshError ? 'refresh_failed="true"' : undefined,
           result.truncated ? 'truncated="true"' : undefined,
         ]
           .filter((value): value is string => value !== undefined)
@@ -105,7 +109,9 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
           ? `${result.content}\n</file>\n[truncated: content exceeded the ${limit} byte limit]`
           : `${result.content}\n</file>`;
 
-        return textResult(`<file ${attributes}>\n${body}`);
+        return textResult(
+          `<file ${attributes}>\n${body}${refreshFailedNote(result.refreshError)}`,
+        );
       } catch (error) {
         if (error instanceof NotFoundError) {
           return errorResult(error.message);
@@ -123,7 +129,9 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
         "List the files and subdirectories at a given ref, one level deep by default; set " +
         "`recursive` to walk the whole subtree. Files carry their size in bytes, so you can " +
         "tell a small config from a bundle before reading it. Names are full paths relative to " +
-        "the repository root. Everything comes from git, so no file is fetched to answer this.",
+        "the repository root. Everything comes from git, so no file is fetched to answer this. " +
+        "If the mirror cannot be refreshed, the cached copy answers and the result says the " +
+        "refresh failed.",
       inputSchema: {
         ref: z
           .string()

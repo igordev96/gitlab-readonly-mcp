@@ -4,12 +4,17 @@ import type { Config } from "../config.js";
 import {
   DEFAULT_MAX_ENTRIES,
   HARD_MAX_ENTRIES,
-  formatRefNotFound,
-  type RefEntry,
+  NotFoundError,
   type RefListResult,
   type RepoStore,
 } from "../repoStore.js";
-import { NO_PROJECT, errorResult, failureMessage, textResult } from "./result.js";
+import {
+  NO_PROJECT,
+  errorResult,
+  failureMessage,
+  refreshFailedNote,
+  textResult,
+} from "./result.js";
 
 function sanitize(value: string | undefined): string {
   return (value ?? "").replace(/[\t\r\n]+/g, " ").trim();
@@ -24,6 +29,7 @@ export function formatRefList(result: RefListResult): string {
     `count="${result.refs.length}"`,
     result.total !== result.refs.length ? `total="${result.total}"` : undefined,
     result.syncedAt ? `synced_at="${result.syncedAt.toISOString()}"` : undefined,
+    result.refreshError ? 'refresh_failed="true"' : undefined,
     result.truncated ? 'truncated="true"' : undefined,
   ]
     .filter((value): value is string => value !== undefined)
@@ -36,14 +42,18 @@ export function formatRefList(result: RefListResult): string {
   );
 
   const body = rows.length > 0 ? rows.join("\n") : "(no refs matched)";
-  const footer = result.truncated
-    ? `\n[truncated: showing ${result.refs.length} of ${result.total} refs]`
-    : "";
+  const footer =
+    (result.truncated
+      ? `\n[truncated: showing ${result.refs.length} of ${result.total} refs]`
+      : "") + refreshFailedNote(result.refreshError);
 
   return `<refs ${attributes}>\n${body}${footer}\n</refs>`;
 }
 
-/** Render a resolved ref as a single, self-describing line. */
+/**
+ * Render a resolved ref as a single, self-describing line, followed by a note
+ * when the answer came from the cache because a refresh failed.
+ */
 export function formatResolvedRef(
   project: string,
   ref: string,
@@ -51,6 +61,7 @@ export function formatResolvedRef(
   kind: string,
   refname: string | undefined,
   syncedAt: Date | undefined,
+  refreshError?: string,
 ): string {
   const attributes = [
     `project="${project}"`,
@@ -59,11 +70,12 @@ export function formatResolvedRef(
     refname ? `refname="${refname}"` : undefined,
     `commit="${commit}"`,
     syncedAt ? `synced_at="${syncedAt.toISOString()}"` : undefined,
+    refreshError ? 'refresh_failed="true"' : undefined,
   ]
     .filter((value): value is string => value !== undefined)
     .join(" ");
 
-  return `<ref ${attributes}>`;
+  return `<ref ${attributes}>${refreshFailedNote(refreshError)}`;
 }
 
 export function registerRefTools(server: McpServer, store: RepoStore, config: Config): void {
@@ -76,7 +88,9 @@ export function registerRefTools(server: McpServer, store: RepoStore, config: Co
         "Each row is `kind`, short commit, name, and the tip commit's subject. " +
         "The list reflects the local mirror as of `synced_at` (by default at most 10 minutes old); " +
         "a ref created since that moment may be missing, because a stale list cannot be detected. " +
-        "Use `resolve_ref` to check one specific ref, which does refresh on a miss.",
+        "Use `resolve_ref` to check one specific ref, which does refresh on a miss. " +
+        "If the mirror cannot be refreshed, the cached copy answers and the result says the " +
+        "refresh failed.",
       inputSchema: {
         project: z
           .string()
@@ -128,7 +142,8 @@ export function registerRefTools(server: McpServer, store: RepoStore, config: Co
       description:
         "Resolve a branch, tag, or revision to the full commit SHA it points at, and say what it is " +
         "(`branch`, `tag`, or `commit` for anything else). Use this to confirm a ref exists before " +
-        "reading files from it. If the ref is missing, the error lists similar names.",
+        "reading files from it. If the ref is missing, the error lists similar names, and it says " +
+        "so when the mirror could not be refreshed, since then a missing ref proves nothing.",
       inputSchema: {
         ref: z
           .string()
@@ -150,15 +165,6 @@ export function registerRefTools(server: McpServer, store: RepoStore, config: Co
 
       try {
         const found = await store.resolveRefInfo(target, ref);
-        if (!found) {
-          // The lookup already refreshed on the miss, so any suggestion here is
-          // based on the freshest view we have.
-          const suggestions = await store
-            .suggestRefs(target, ref)
-            .catch(() => [] as RefEntry[]);
-          return errorResult(formatRefNotFound(target, ref, suggestions));
-        }
-
         return textResult(
           formatResolvedRef(
             found.project,
@@ -167,9 +173,15 @@ export function registerRefTools(server: McpServer, store: RepoStore, config: Co
             found.kind,
             found.refname,
             found.syncedAt,
+            found.refreshError,
           ),
         );
       } catch (error) {
+        // A ref that does not resolve is an answer, not a failure: the message
+        // carries the close matches and, when relevant, the failed refresh.
+        if (error instanceof NotFoundError) {
+          return errorResult(error.message);
+        }
         return errorResult(`Failed to resolve "${ref}" in "${target}".\n${failureMessage(error)}`);
       }
     },

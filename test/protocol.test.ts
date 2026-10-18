@@ -223,3 +223,98 @@ describe("MCP protocol", () => {
     assert.match(text, /does not appear to be a git repository/i);
   });
 });
+
+// The same surface with a mirror that cannot be refreshed. From the tool's side a
+// rejected token, a missing VPN, and a broken remote are one situation: the cache
+// can answer, and the only wrong thing to do is present it as a fresh answer.
+describe("MCP protocol when the mirror cannot be refreshed", () => {
+  const offlineConfig: Config = {
+    host: pathToFileURL(fixture.root).href,
+    token: "",
+    cacheDir: path.join(fixture.root, "cache-offline"),
+    gitBin: "git",
+    // `always` fails the refresh on every call, not just once past the TTL.
+    fetchMode: "always",
+    fetchTtlSeconds: 600,
+  };
+  const git = new Git({ bin: "git" });
+  let client: Client;
+
+  before(async () => {
+    const warm = new RepoStore({ ...offlineConfig, fetchMode: "ttl" }, git);
+    await warm.readFile("demo", "main", "src/index.tsx");
+    const dir = warm.mirrorPath("demo");
+    const moved = await git.run(
+      ["remote", "set-url", "origin", pathToFileURL(path.join(fixture.root, "gone.git")).href],
+      { gitDir: dir },
+    );
+    assert.equal(moved.code, 0, "expected to be able to break the remote");
+
+    const store = new RepoStore(offlineConfig, git);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createServer(offlineConfig, store);
+    await server.connect(serverTransport);
+
+    client = new Client({ name: "protocol-test-offline", version: "0.0.0" });
+    await client.connect(clientTransport);
+
+    return async () => {
+      await client.close();
+      await server.close();
+    };
+  });
+
+  it("reads a file from the cache and says the refresh failed", async () => {
+    const text = textOf(
+      await client.callTool({
+        name: "get_file",
+        arguments: { project: "demo", ref: "main", path: "src/index.tsx" },
+      }),
+    );
+    assert.match(text, /export const hello/, "the cached file still answers");
+    assert.match(text, /refresh_failed="true"/);
+    assert.match(text, /\[refresh failed: /);
+  });
+
+  it("lists refs from the cache and says the refresh failed", async () => {
+    const text = textOf(
+      await client.callTool({ name: "list_refs", arguments: { project: "demo" } }),
+    );
+    assert.match(text, /^branch\t\w+\tmain\b/m);
+    assert.match(text, /refresh_failed="true"/);
+  });
+
+  it("lists a tree from the cache and says the refresh failed", async () => {
+    const text = textOf(
+      await client.callTool({
+        name: "list_tree",
+        arguments: { project: "demo", ref: "main" },
+      }),
+    );
+    assert.match(text, /^tree\t-\tsrc$/m);
+    assert.match(text, /refresh_failed="true"/);
+  });
+
+  it("resolves a cached ref and says the refresh failed", async () => {
+    const text = textOf(
+      await client.callTool({
+        name: "resolve_ref",
+        arguments: { project: "demo", ref: "main" },
+      }),
+    );
+    assert.match(text, /kind="branch"/);
+    assert.match(text, /refresh_failed="true"/);
+  });
+
+  it("does not present a missing ref as proof of absence", async () => {
+    const response = (await client.callTool({
+      name: "resolve_ref",
+      arguments: { project: "demo", ref: "no/such-branch" },
+    })) as unknown as TextResult;
+
+    assert.equal(response.isError, true);
+    const text = textOf(response);
+    assert.match(text, /Ref not found/);
+    assert.match(text, /could not be refreshed/);
+  });
+});

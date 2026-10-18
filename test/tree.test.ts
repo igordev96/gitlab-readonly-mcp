@@ -245,4 +245,42 @@ describe("formatTree", () => {
     assert.doesNotMatch(text, /truncated/);
     assert.doesNotMatch(text, /total=/);
   });
+
+  it("says when the answer came from the cache because a refresh failed", () => {
+    const text = formatTree({
+      project: "demo",
+      ref: "main",
+      commit: "a".repeat(40),
+      path: "",
+      recursive: false,
+      entries: [{ path: "README.md", type: "blob", mode: "100644", object: "c".repeat(40), size: 12 }],
+      total: 1,
+      truncated: false,
+      syncedAt: new Date("2026-10-18T00:00:00.000Z"),
+      fetched: false,
+      refreshError: "Could not reach GitLab. Check network and VPN access to the host.",
+    });
+
+    // The cached answer is still an answer, so it is served — with the reason.
+    assert.match(text, /refresh_failed="true"/);
+    assert.match(text, /blob\t12\tREADME\.md/);
+    assert.match(text, /\[refresh failed: Could not reach GitLab/);
+    assert.doesNotMatch(text, /truncated=/);
+  });
+
+  it("does not mention a refresh when there was nothing to report", () => {
+    const text = formatTree({
+      project: "demo",
+      ref: "main",
+      commit: "a".repeat(40),
+      path: "",
+      recursive: false,
+      entries: [],
+      total: 0,
+      truncated: false,
+      fetched: true,
+    });
+
+    assert.doesNotMatch(text, /refresh/);
+  });
 });

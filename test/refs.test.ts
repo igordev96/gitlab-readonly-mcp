@@ -133,8 +133,15 @@ describe("resolve_ref", () => {
     assert.equal(found.commit, sha);
   });
 
-  it("returns undefined for a ref that does not exist", async () => {
-    assert.equal(await store.resolveRefInfo("demo", "no/such-branch"), undefined);
+  it("reports a ref that does not exist as not found", async () => {
+    await assert.rejects(
+      () => store.resolveRefInfo("demo", "no/such-branch"),
+      (error: unknown) => {
+        assert.ok(error instanceof NotFoundError);
+        assert.match(error.message, /Ref not found/);
+        return true;
+      },
+    );
   });
 });
 

@@ -22,6 +22,18 @@ const REF_MAX_BYTES = 4 * 1024 * 1024;
 /** Byte cap for a tree listing; the entry cap usually bites first. */
 const TREE_MAX_BYTES = 8 * 1024 * 1024;
 
+/**
+ * Name of the file, inside a mirror, that records the time of the last
+ * *successful* fetch as epoch milliseconds.
+ *
+ * This is deliberately not git's own `FETCH_HEAD`. Git truncates `FETCH_HEAD`
+ * to zero bytes and stamps it *before* a fetch fails, so a rejected fetch is
+ * indistinguishable from a successful one by its mtime alone; treating it as a
+ * sync made the server report freshness it had never achieved. See
+ * `docs/history.md`, 2026-10-18.
+ */
+const SYNC_STAMP_FILE = "mcp-last-sync";
+
 /** Thrown when a ref or file path does not exist (as opposed to a hard failure). */
 export class NotFoundError extends Error {
   constructor(message: string) {
@@ -42,6 +54,8 @@ export interface FileReadResult {
   syncedAt?: Date;
   /** True when this read triggered a fetch. */
   fetched: boolean;
+  /** Set when the freshness check failed and this answer came from the cache. */
+  refreshError?: string;
 }
 
 /** Which refs a listing should include. */
@@ -106,6 +120,8 @@ export interface TreeListResult {
   syncedAt?: Date;
   /** True when this listing triggered a fetch. */
   fetched: boolean;
+  /** Set when the freshness check failed and this answer came from the cache. */
+  refreshError?: string;
 }
 
 export interface RefListResult {
@@ -121,6 +137,8 @@ export interface RefListResult {
   syncedAt?: Date;
   /** True when this listing triggered a fetch. */
   fetched: boolean;
+  /** Set when the freshness check failed and this answer came from the cache. */
+  refreshError?: string;
 }
 
 export interface RefLookupResult {
@@ -133,6 +151,8 @@ export interface RefLookupResult {
   refname?: string;
   syncedAt?: Date;
   fetched: boolean;
+  /** Set when the freshness check failed and this answer came from the cache. */
+  refreshError?: string;
 }
 
 /** Trim, drop surrounding slashes, and drop a trailing `.git`. */
@@ -316,7 +336,19 @@ export function parseTreeEntries(output: string): TreeEntry[] {
   return `${base} Did you mean:\n${lines.join("\n")}`;
 }
 
+/** The message of a thrown value, for reporting without a stack. */
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 type RefreshReason = "ttl" | "miss";
+
+/** What a freshness check did: whether a fetch ran, and why a failed one failed. */
+interface RefreshOutcome {
+  fetched: boolean;
+  /** Set when a fetch was attempted and failed. The mirror is still readable. */
+  error?: string;
+}
 
 interface ResolvedRef {
   dir: string;
@@ -324,6 +356,8 @@ interface ResolvedRef {
   project: string;
   commit?: string;
   fetched: boolean;
+  /** Set when the freshness check tried to fetch and could not. */
+  refreshError?: string;
 }
 
 /**
@@ -387,8 +421,8 @@ export class RepoStore {
       );
     }
 
-    // `git clone --mirror` does not write FETCH_HEAD, so seed the clock here.
-    this.syncTimes.set(clean, Date.now());
+    // A clone is itself a sync: record it, so the first read does not fetch again.
+    await this.recordSync(clean, dir);
     process.stderr.write(`[gitlab-mcp] cloned ${clean}\n`);
     return dir;
   }
@@ -410,14 +444,23 @@ export class RepoStore {
     return commit;
   }
 
-  /** Resolve a ref and describe what it is: a branch, a tag, or a bare revision. */
-  async resolveRefInfo(project: string, ref: string): Promise<RefLookupResult | undefined> {
+  /**
+   * Resolve a ref and describe what it is: a branch, a tag, or a bare revision.
+   *
+   * Throws `NotFoundError` when the ref does not resolve: the message lists close
+   * matches, and admits it when the mirror could not be refreshed — a missing ref
+   * is not proof of absence when the view behind it is out of date.
+   */
+  async resolveRefInfo(project: string, ref: string): Promise<RefLookupResult> {
     const cleanProject = validateProject(project);
     const cleanRef = validateRef(ref);
 
-    const { dir, commit, fetched } = await this.resolveWithFreshness(cleanProject, cleanRef);
+    const { dir, commit, fetched, refreshError } = await this.resolveWithFreshness(
+      cleanProject,
+      cleanRef,
+    );
     if (!commit) {
-      return undefined;
+      throw new NotFoundError(await this.notFoundRefMessage(cleanProject, cleanRef, refreshError));
     }
 
     const named = await this.namedRef(dir, cleanRef);
@@ -430,6 +473,7 @@ export class RepoStore {
       refname: named?.refname,
       syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
       fetched,
+      refreshError,
     };
   }
 
@@ -445,7 +489,7 @@ export class RepoStore {
     const cleanProject = validateProject(project);
     const kind: RefKindFilter = options.kind ?? "branches";
     const dir = await this.ensureMirror(cleanProject);
-    const fetched = await this.refresh(cleanProject, dir, "ttl");
+    const outcome = await this.refresh(cleanProject, dir, "ttl");
 
     let refs = await this.rawRefs(dir, patternsFor(kind));
 
@@ -467,7 +511,8 @@ export class RepoStore {
       truncated,
       defaultBranch: await this.defaultBranch(dir),
       syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
-      fetched,
+      fetched: outcome.fetched,
+      refreshError: outcome.error,
     };
   }
 
@@ -501,9 +546,12 @@ export class RepoStore {
     const cleanPath = dirPath.trim() ? validateRepoPath(dirPath).replace(/\/+$/, "") : "";
     const recursive = options.recursive ?? false;
 
-    const { dir, commit, fetched } = await this.resolveWithFreshness(cleanProject, cleanRef);
+    const { dir, commit, fetched, refreshError } = await this.resolveWithFreshness(
+      cleanProject,
+      cleanRef,
+    );
     if (!commit) {
-      throw new NotFoundError(await this.notFoundRefMessage(cleanProject, cleanRef));
+      throw new NotFoundError(await this.notFoundRefMessage(cleanProject, cleanRef, refreshError));
     }
 
     // `commit:path` names the directory itself, so its *contents* are listed.
@@ -542,6 +590,7 @@ export class RepoStore {
       truncated: all.length > limit || listed.truncated,
       syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
       fetched,
+      refreshError,
     };
   }
 
@@ -582,9 +631,12 @@ export class RepoStore {
     const cleanRef = validateRef(ref);
     const cleanPath = validateRepoPath(filePath);
 
-    const { dir, commit, fetched } = await this.resolveWithFreshness(cleanProject, cleanRef);
+    const { dir, commit, fetched, refreshError } = await this.resolveWithFreshness(
+      cleanProject,
+      cleanRef,
+    );
     if (!commit) {
-      throw new NotFoundError(await this.notFoundRefMessage(cleanProject, cleanRef));
+      throw new NotFoundError(await this.notFoundRefMessage(cleanProject, cleanRef, refreshError));
     }
 
     // Resolve by SHA so the path can never be mistaken for a ref, and so the
@@ -610,6 +662,7 @@ export class RepoStore {
       binary: shown.stdout.includes("\u0000"),
       syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
       fetched,
+      refreshError,
     };
   }
 
@@ -625,16 +678,21 @@ export class RepoStore {
     const cleanRef = validateRef(ref);
     const dir = await this.ensureMirror(cleanProject);
 
-    const refreshed = await this.refresh(cleanProject, dir, "ttl");
+    const first = await this.refresh(cleanProject, dir, "ttl");
     let commit = await this.revParse(dir, cleanRef);
-    let fetched = refreshed;
+    let fetched = first.fetched;
+    let refreshError = first.error;
 
-    if (!commit && !refreshed) {
-      fetched = await this.refresh(cleanProject, dir, "miss");
+    // Only a *miss* earns a second fetch. A refresh that failed is not retried:
+    // it would fail the same way, and its reason is worth passing on unchanged.
+    if (!commit && !first.fetched && !first.error) {
+      const second = await this.refresh(cleanProject, dir, "miss");
       commit = await this.revParse(dir, cleanRef);
+      fetched = second.fetched;
+      refreshError = second.error;
     }
 
-    return { dir, ref: cleanRef, project: cleanProject, commit, fetched };
+    return { dir, ref: cleanRef, project: cleanProject, commit, fetched, refreshError };
   }
 
   private async revParse(dir: string, ref: string): Promise<string | undefined> {
@@ -741,10 +799,25 @@ export class RepoStore {
    * Build the "not found" message for a ref, adding close matches when we can
    * work them out. Suggestions are a nicety: if listing refs fails for any
    * reason the plain message is still the right answer.
+   *
+   * When the refresh failed, the message says so: every ref created since the
+   * last successful sync is invisible, so "not found" would otherwise read as
+   * proof that the ref does not exist.
    */
-  private async notFoundRefMessage(project: string, ref: string): Promise<string> {
+  private async notFoundRefMessage(
+    project: string,
+    ref: string,
+    refreshError?: string,
+  ): Promise<string> {
     const suggestions = await this.suggestRefs(project, ref).catch(() => [] as RefEntry[]);
-    return formatRefNotFound(project, ref, suggestions);
+    const base = formatRefNotFound(project, ref, suggestions);
+    if (!refreshError) {
+      return base;
+    }
+    return (
+      `${base}\nThe mirror could not be refreshed either, so a ref created since ` +
+      `the last sync would not appear here: ${refreshError}`
+    );
   }
 
   /**
@@ -753,9 +826,17 @@ export class RepoStore {
    * Serialised per project. The decision is re-checked inside the lock so that
    * callers queued behind an in-flight fetch do not fetch again.
    *
-   * @returns true when a fetch actually ran.
+   * A failed fetch is reported rather than thrown. A mirror that cannot be
+   * refreshed is still a mirror, and only the caller can judge whether serving
+   * it is the right thing — the answer carries `syncedAt` so its age is visible.
+   *
+   * @returns whether a fetch actually ran, and why one failed if it did.
    */
-  private async refresh(project: string, dir: string, reason: RefreshReason): Promise<boolean> {
+  private async refresh(
+    project: string,
+    dir: string,
+    reason: RefreshReason,
+  ): Promise<RefreshOutcome> {
     const startedAt = Date.now();
     const ttlMs = this.config.fetchMode === "always" ? 0 : this.config.fetchTtlSeconds * 1000;
 
@@ -763,15 +844,21 @@ export class RepoStore {
       const last = await this.lastSyncAt(project, dir);
       if (reason === "ttl") {
         if (last !== undefined && Date.now() - last <= ttlMs) {
-          return false;
+          return { fetched: false };
         }
       } else if (last !== undefined && last >= startedAt) {
         // Another caller refreshed while we waited our turn.
-        return false;
+        return { fetched: false };
       }
 
-      await this.execFetch(project, dir);
-      return true;
+      try {
+        await this.execFetch(project, dir);
+        return { fetched: true };
+      } catch (error) {
+        // Deliberately not retried by the caller: a second attempt would fail
+        // the same way and cost another timeout before saying the same thing.
+        return { fetched: false, error: describeError(error) };
+      }
     });
   }
 
@@ -787,7 +874,8 @@ export class RepoStore {
         this.redact(result.stderr).trim(),
       );
     }
-    this.syncTimes.set(project, Date.now());
+    // Only a fetch that got this far counts as a sync; a failure throws above.
+    await this.recordSync(project, dir);
   }
 
   /** Serialise work per key (here: per project) without blocking other projects. */
@@ -801,15 +889,32 @@ export class RepoStore {
     return run;
   }
 
+  /** Path of the sync stamp inside a mirror. */
+  private syncStampPath(dir: string): string {
+    return path.join(dir, SYNC_STAMP_FILE);
+  }
+
+  /**
+   * Record a successful sync, in memory and on disk.
+   *
+   * The disk write is best-effort: a mirror whose stamp cannot be written stays
+   * usable, it is merely treated as never-synced and fetched again next time.
+   */
+  private async recordSync(project: string, dir: string, at = Date.now()): Promise<void> {
+    this.syncTimes.set(project, at);
+    await fs.writeFile(this.syncStampPath(dir), `${at}\n`, "utf8").catch(() => undefined);
+  }
+
   /**
    * Last known sync time: the newest of the in-memory clock and the mirror's
-   * FETCH_HEAD mtime (which survives process restarts).
+   * sync stamp. Unlike `FETCH_HEAD`, the stamp is written only after a fetch
+   * succeeds, so it survives a restart without a failure ever advancing it.
    */
   private async lastSyncAt(project: string, dir: string): Promise<number | undefined> {
     let fromFile: number | undefined;
     try {
-      const stats = await fs.stat(path.join(dir, "FETCH_HEAD"));
-      fromFile = stats.mtimeMs;
+      const parsed = Number((await fs.readFile(this.syncStampPath(dir), "utf8")).trim());
+      fromFile = Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
     } catch {
       fromFile = undefined;
     }

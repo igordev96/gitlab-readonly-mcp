@@ -20,6 +20,15 @@ export const NO_PROJECT =
   "No project specified and GITLAB_DEFAULT_PROJECT is not set. Pass a `project` like 'group/subgroup/repo'.";
 
 /**
+ * Footnote for a tool that answered from the cached mirror because refreshing it
+ * failed. The answer is still real — just as old as `synced_at` says — so this
+ * reports the reason instead of quietly presenting the read as a fresh one.
+ */
+export function refreshFailedNote(refreshError: string | undefined): string {
+  return refreshError ? `\n[refresh failed: ${refreshError}]` : "";
+}
+
+/**
  * Render a failure for the agent. A git failure carries git's own stderr, which
  * is the difference between "clone failed" and "your token was rejected".
  */
