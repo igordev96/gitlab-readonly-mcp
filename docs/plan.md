@@ -8,15 +8,17 @@
 > runbook — lives in [`history.md`](history.md). Keep the two apart: this file
 > should not grow as phases land.
 
-Status: phases 0, 1, 2a, 2b and 2c-1 complete; newest tag `v0.6.0` (repo
-registry). Six tools are implemented: the four reads — exercised against the real
-GitLab on the success path and on a deliberately broken token — plus `list_repos`
-and `sync_repo`. A project registers itself the first time it is used; its policy
-(`repos.json`) can include `manual`, which makes no network call that `sync_repo`
-did not ask for, while its age always comes from the mirror's sync stamp and
-never from the registry. Local-clone resolution (`add_repo`/`remove_repo`) is
-next, in 2c-2. The token is supplied by OpenCode's config
-(`~/.config/opencode/opencode.jsonc`), not by the shell. See `history.md`.
+Status: phases 0, 1, 2a, 2b, 2c-1 and 2c-2 complete; newest tag `v0.7.0` (local
+clones). Eight tools are implemented: the four reads — exercised against the real
+GitLab on the success path and on a deliberately broken token — plus `list_repos`,
+`add_repo`, `remove_repo` and `sync_repo`. A project registers itself the first
+time it is used, or explicitly with `add_repo`, and its registry entry decides
+where it is read from: a mirror the server keeps fresh, or a clone of your own,
+which is read, never cloned, and fetched only when a ref is missing from it. Its
+policy (`repos.json`) can include `manual`, which makes no network call that
+`sync_repo` did not ask for, while its age always comes from the source's own
+sync stamp and never from the registry. The token is supplied by OpenCode's
+config (`~/.config/opencode/opencode.jsonc`), not by the shell. See `history.md`.
 Owner: igordev96
 Author: OpenCode
 
@@ -75,10 +77,12 @@ The MCP resolves every project to one of two sources:
 
 | Mode | When | Fetch behavior |
 |---|---|---|
-| **Local clone** | A clone of the project exists at a configured path | Read-only; fetch **only if the ref is missing**; never touch the working tree |
-| **Managed mirror** | Project is GitLab-only | Bare mirror under cache dir; fetch per freshness policy |
+| **Managed mirror** (default) | The project is not registered as local | Bare mirror under the cache dir, cloned on first use; fetched per the freshness policy |
+| **Local clone** | The project is registered with `add_repo(project, local_path)` | Read through that clone's own git directory; fetched only when a ref is missing, under `always`, or on `sync_repo` — never on the TTL; the working tree is never touched |
 
-Local clones are preferred. Mirrors cost disk; local clones cost nothing.
+A clone is used for the projects you point at one, and only those: nothing scans
+the disk for checkouts, so the choice of source is explicit and recorded in
+`repos.json`. Mirrors cost disk; a registered clone costs nothing.
 
 ### 3.2 Layout
 
@@ -111,13 +115,15 @@ An absent field means "the configured default", so an entry records only what
 makes that project different. Writes go through a temp file and a rename, and a
 file that does not parse is kept aside as `repos.json.corrupt` rather than
 discarded — the only ways it got that way are a hand edit or an interrupted
-write.
+write. `add_repo` merges into the entry that is already there, so re-pointing a
+project at a path cannot quietly reset a hand-written `freshnessMode`; going back
+to a mirror clears `localPath` in the same step.
 
 ### 3.3 Ref resolution flow
 
 ```
 resolve(project, ref):
-  1. Build "git view" (mirror path, or local clone working dir)
+  1. Build the "git view": the mirror, or a registered clone's git directory
   2. If ref resolves locally -> maybe refresh per freshness policy -> return sha
   3. If ref NOT found locally:
        a. fetch once (mirror, or local clone's remote)
@@ -128,6 +134,12 @@ resolve(project, ref):
 Step 3 is what makes a brand-new branch appear without a manual sync. Step 3c is
 implemented (`src/repoStore.ts`: `rankSimilar`, surfaced by `resolve_ref` and by
 `get_file`'s not-found error).
+
+For a registered clone a bare name is tried twice — as a local ref, then as
+`refs/remotes/<remote>/<name>` — because after `git clone` only the checked-out
+branch is a local ref and every other branch lives under `refs/remotes/`, where
+a bare name never resolves. The local name wins when both exist, so a clone
+answers with its own branch, unpushed commits included.
 
 ### 3.4 Freshness strategy (core concern)
 
@@ -140,8 +152,10 @@ old branch. Mitigations:
    For non-mirror bare clones we pass `--prune` explicitly.
 2. **Per-repo policy** (`freshnessMode`):
    - `ttl` (default): fetch when the last successful sync is older than `ttl`
-     (default 600s).
-   - `always`: fetch before every read (correct, slower).
+     (default 600s). A registered local clone is never fetched on the TTL —
+     §3.5 says why.
+   - `always`: fetch before every read (correct, slower). This is the one mode
+     that fetches a clone on a timer, because that is the operator asking.
    - `manual`: nothing fetches by itself — not the TTL refresh, not a miss, not
      even the first-use clone, because each of those is network access the
      operator did not ask for. Only `sync_repo` refreshes such a project, and a
@@ -153,8 +167,8 @@ old branch. Mitigations:
 5. **Explicit control:** `sync_repo(project)` forces a fetch; `list_repos` shows
    every registered project, its effective policy, and last *sync* times read
    from the stamp, so you can see which are stale.
-6. **Concurrency:** serialize fetch per project (a simple in-process lock) so
-   parallel tool calls don't run overlapping fetches.
+6. **Concurrency:** serialize fetch per source (a simple in-process lock keyed by
+   the git directory) so parallel tool calls don't run overlapping fetches.
 7. **Where fetch-on-miss cannot help:** listing refs. A ref that fails to resolve
    is a detectable miss, so we can fetch and retry; a *stale list* is not — a
    branch pushed a minute ago is simply absent, with no signal that anything is
@@ -166,8 +180,10 @@ old branch. Mitigations:
 > `list_repos`, and the per-project override in `repos.json`).
 >
 > Implementation notes:
-> - The fetch decision is re-checked *inside* the per-project lock, so callers
->   queued behind an in-flight fetch do not fetch again.
+> - The fetch decision is re-checked *inside* the per-source lock, so callers
+>   queued behind an in-flight fetch do not fetch again. The lock is keyed by the
+>   git directory, not by the project, so a clone and a mirror never wait on each
+>   other.
 > - If the TTL step already fetched, a missing ref does not trigger a second
 >   fetch; if it did not fetch, the miss triggers exactly one.
 > - Policy is resolved in one place — the project's registry entry, else
@@ -177,34 +193,63 @@ old branch. Mitigations:
 >   `list_repos` on an install that predates the registry lists nothing until a
 >   project has been read. Discovery by scanning the cache is deliberately not
 >   done: it buys a `registered=false` state and a directory walk to fix a single
->   empty listing.
-> - The sync clock lives in a stamp file inside the mirror
+>   empty listing. `add_repo` is the explicit way out.
+> - The sync clock lives in a stamp file inside the source's git directory
 >   (`mcp-last-sync`, epoch ms) and is written **only after a fetch succeeds**,
 >   so it survives a restart without a failure ever advancing it. `git clone
 >   --mirror` writes no `FETCH_HEAD` (verified), so a clone records itself too.
 >   git's own `FETCH_HEAD` is deliberately not trusted: git stamps it before a
 >   fetch fails, which made a rejected fetch look like a fresh sync. The registry
 >   deliberately holds no copy of that clock — two clocks that can disagree is a
->   bug this project has already paid for.
-> - A refresh that fails does not fail the read. The cached mirror answers, and
+>   bug this project has already paid for. A registered clone keeps *its own*
+>   stamp in its own `.git`, so a miss fetched there leaves the mirror's clock
+>   untouched; seen live, the two differed by 43 seconds.
+> - A refresh that fails does not fail the read. The cached copy answers, and
 >   the result reports the reason next to `syncedAt`, so staleness stays visible
 >   instead of turning into an outage. A ref that does not resolve through a
 >   failed refresh says so — otherwise "not found" would read as proof of
->   absence when all it proves is that the mirror is out of date.
+>   absence when all it proves is that the copy is out of date. The wording names
+>   a clone as a clone rather than as a mirror.
+> - Reading a clone is done through `--git-dir=<clone>/.git` (whatever git
+>   reports as its git directory, so linked worktrees work), and a fetch runs
+>   with that checkout as its working directory, which is how git finds the
+>   repository's own remote configuration. Nothing is ever checked out, stashed
+>   or switched: verified live as a byte-identical `git status --porcelain`
+>   before and after reads.
+> - A local entry's age is measured like a mirror's, from the clone's own stamp;
+>   a `list_repos` row for it also checks that the path still holds a usable
+>   repository, so a clone that has been moved or deleted reads `present=false`
+>   instead of failing the listing.
 
 ### 3.5 Local-clone handling
 
-- Detect the remote dynamically (`git remote -v` / config); do **not** assume
-  `origin`.
-- Fetch only when the ref is missing; never checkout/stash/switch. There is no
-  TTL fetch for a local clone: it is not a mirror of ours to keep fresh, and a
-  clone is authoritative about the refs it holds.
-- Reading via `git --git-dir=<path>/.git show <ref>:<path>` never changes the
-  working tree, so uncommitted work is untouched. A fetch on a miss does write to
-  that clone's `.git` (new objects, remote-tracking refs) — accepted deliberately
-  (decided 2026-10-18), because the alternative is a tool that cannot see a
-  branch you have not fetched yourself.
-- If the repo has no reachable remote, degrade gracefully (local refs only).
+- Registered with `add_repo(project, local_path)` and validated there: the path
+  must exist and be a git repository — a normal clone or a bare repo — so a wrong
+  path fails at the call that records it rather than at the read that would trust
+  it. Every read re-checks it, because a clone can be moved or deleted
+  afterwards: the read then names the path that is gone and both ways out
+  (`add_repo` again, or `remove_repo` to fall back to a mirror). Nothing falls
+  back silently.
+- The remote is detected, never assumed: `origin` when the repository has one,
+  otherwise the first remote it has. A clone with no remote at all is still
+  readable, and a miss in it says *"the registered clone at &lt;path&gt; has no
+  remote to fetch from"* rather than a bare "not found".
+- No TTL fetch. A fetch happens only for a miss, under `always`, or on
+  `sync_repo`.
+- Reading through `--git-dir=<clone>` never changes the working tree, so
+  uncommitted work is untouched. A fetch on a miss does write to that clone's
+  `.git` (new objects, remote-tracking refs, and our sync stamp) — accepted
+  deliberately (decided 2026-10-18), because the alternative is a tool that
+  cannot see a branch you have not fetched yourself.
+- The clone's refs are the clone's: a bare name is tried as a local ref and then
+  as `refs/remotes/<remote>/<name>`, `list_refs` lists both namespaces while
+  reporting each branch once, and a branch only the remote has is still reported
+  as a branch (§3.3).
+- `remove_repo(project, delete_mirror?)` forgets the registration and, when asked,
+  deletes the mirror — never a local clone, and never anything outside the
+  cache's `mirrors` tree. Forgetting a mirror-backed project does not stick (the
+  next read registers it again); forgetting a local registration is how a project
+  goes back to being read from a mirror.
 
 ---
 
@@ -213,20 +258,27 @@ old branch. Mitigations:
 Tool names are exposed by OpenCode as `gitlab_<tool>`.
 
 **Management**
-- `list_repos()` — every registered project, its effective policy, whether its
-  data is on disk, and its last successful sync. ✅
-- `sync_repo(project)` — fetch now, ignoring the TTL; the only way to refresh a
+- `list_repos()` — every registered project, its effective policy, its source
+  (`mirror` or `local`, with `local_path`), whether its data is on disk, and its
+  last successful sync. ✅
+- `add_repo(project, localPath?)` — register a project without touching the
+  network: with a path it is read from that clone, without one it goes back to
+  being mirror-backed. An existing entry is updated and its policy kept. ✅
+- `remove_repo(project, deleteMirror?)` — forget a project, deleting its mirror
+  only when asked, and never a local clone. ✅
+- `sync_repo(project)` — fetch now, ignoring the TTL and following the project's
+  source (a mirror, or the clone's own remote); the only way to refresh a
   `manual` project. ✅ (A `full` re-clone parameter is not implemented; a mirror
   is cloned when it is missing.)
-- `add_repo(project, localPath?)` — register; decides mirror vs local. (2c-2)
-- `remove_repo(project, deleteMirror?)`. (2c-2)
 
 **Reads (core)**
 - `get_file(project, ref, path)` — `git show <ref>:<path>`. ✅
 - `list_tree(project, ref, path?, recursive?, max_entries?)` — `git ls-tree -l -z`,
   one level deep by default, paths relative to the repository root. ✅
 - `list_refs(project, kind=branches|tags|all, search?, max_refs?)` — `git for-each-ref`,
-  scoped to `refs/heads` + `refs/tags`. ✅
+  scoped to `refs/heads` + `refs/tags`, plus a registered clone's
+  `refs/remotes/<remote>` under `branches`, since that is where every branch but
+  the checked-out one lives there. ✅
 - `resolve_ref(project, ref)` — sha existence + close matches. ✅
   (Named `ref` rather than the original `name`, to match `get_file`.)
 
@@ -309,13 +361,13 @@ truncation flag when output is capped.
 | 2b-1 | `list_refs`, `resolve_ref`, close-match hints | Agent can find and confirm a branch before reading it |
 | 2b-2 | `list_tree` | Agent can browse a tree it never cloned |
 | 2c-1 | Registry: `list_repos`, `sync_repo`, per-project policy, `manual` mode | The registry reports every project in use and its true age; a `manual` project is refreshed only by `sync_repo` |
-| 2c-2 | Local clones: `add_repo`, `remove_repo`, mirror+local resolution | Local clones are preferred; mirrors can still be synced on demand |
+| 2c-2 | Local clones: `add_repo`, `remove_repo`, mirror+local resolution | A registered clone answers reads with no mirror created for it, fetches only what it lacks, and nothing falls back silently |
 | 3 | Diff & history: `compare`, `diff_file`, `log`, `get_commit`, `blame` | "What changed between `develop` and `fix/PROJ-7608`?" works |
 | 4 | Polish: `search`, `pickaxe`, URL parser, truncation, caching, stale-visibility | Freshness provenance visible on every read |
 
-> **Status:** phases 0–2c-1 complete; 2b-1 is `v0.3.0`, 2b-2 `v0.4.0`, the
-> freshness hardening `v0.5.x`, and 2c-1 is `v0.6.0`. Next is 2c-2 (local
-> clones), then 3–4. Per-phase detail: [`history.md`](history.md).
+> **Status:** phases 0–2c-2 complete; 2b-1 is `v0.3.0`, 2b-2 `v0.4.0`, the
+> freshness hardening `v0.5.x`, 2c-1 `v0.6.0`, and 2c-2 is `v0.7.0`. Next are 3
+> (diff and history) and 4. Per-phase detail: [`history.md`](history.md).
 
 ### Source layout
 
@@ -326,19 +378,21 @@ src/
   config.ts      # env, host, cache dir, default project, fetch policy
   git.ts         # safe git exec wrapper (array args, no shell)
   gitDiagnostics.ts  # classify git stderr into an actionable hint
-  repoStore.ts   # mirror resolution, clone/fetch, ref resolution, freshness
+  repoStore.ts   # project -> source resolution, refs, trees, freshness policy
+  sources.ts     # mirror paths, clone, fetch, per-source lock, the sync clock
   registry.ts    # repos.json: per-project source and freshness policy
   url.ts         # GitLab web URL -> {project, ref, path}      (Phase 4)
   tools/
     result.ts      # shared tool result shapes and error rendering
     files.ts       # get_file, list_tree                            ✅ Phase 2b-2
     refs.ts        # list_refs, resolve_ref                        ✅ Phase 2b-1
-    repos.ts       # list_repos, sync_repo                         ✅ Phase 2c-1
+    repos.ts       # list_repos, sync_repo, add_repo, remove_repo   ✅ Phase 2c-1/2c-2
     history.ts  search.ts                                          (later phases)
 test/
   fixture.ts     # builds a throwaway "GitLab" (working repo + bare server)
-  store.test.ts  # mirror resolution, guards, freshness, project policy
+  store.test.ts  # source resolution, guards, freshness, project policy
   registry.test.ts  # the registry file: parsing, persistence, corrupt handling
+  local.test.ts  # local-clone sources: reading, misses, path and delete guards
   refs.test.ts   # ref listing, resolution, close matches
   tree.test.ts   # directory listings, the ls-tree parser, rendering
   repos.test.ts  # rendering the registry listing

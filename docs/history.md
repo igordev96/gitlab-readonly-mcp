@@ -22,6 +22,7 @@ reference its own tag, so each milestone is recorded here by a follow-up commit.
 | `v0.5.0` | `cdd9a2c` | Freshness hardening from the `v0.4.0` live check — the sync clock is a stamp written only on success, and a refresh that fails answers from the cache and reports why. | ✅ The degraded path, live: with the token still rejected, all four tools answered from the cache with `refresh_failed="true"` instead of failing (`list_refs` 74 refs, `list_refs` search 8, `list_tree` 23 entries, `get_file` at the same `8297d0d` Phase 1 read). No `synced_at` advanced. The success path — a fetch that writes the stamp — was unverified at that point; the later `v0.5.1` runs proved it. The check found two defects, both in the findings log. |
 | `v0.5.1` | `a2919b3` | Both defects from the `v0.5.0` check: the refresh note now carries the diagnostic, and an unmeasured sync time reads `synced_at="unknown"` instead of vanishing. | ✅ The failure note is verified live; the `unknown` rendering is still tests-only. Two runs. **Working token:** the first read fetched (2099 ms) and reported a real `synced_at`, later reads inside the TTL were 74–81 ms reporting the same value, and the mirror gained a 14-byte `mcp-last-sync`. **Token deliberately broken:** all four tools answered from cache in ~500 ms with `refresh_failed="true"`, the credentials hint and `git said: … could not read Username …`, counts and commit unchanged, and `synced_at` stayed at the stored `17:48:48.101Z` while git's own `FETCH_HEAD` was zeroed and restamped at `19:03:55` — the old build would have reported that failure time as the sync time. `synced_at="unknown"` needs a mirror with no stamp; that machine has none, so it stays unit-tested only. |
 | `v0.6.0` | `3135893` | Phase 2c-1 — the project registry (`repos.json`), a per-project freshness policy including `manual`, and the `list_repos` / `sync_repo` tools. The registry holds policy only: a project's age still comes from the mirror's stamp. | ✅ All four calls matched their predicted shapes against the pilot project. `list_repos` before any read: `count="0"` in 9 ms — "registered on first use", made visible rather than assumed. `get_file` on `fix/PROJ-7608` fetched in 2653 ms, `commit="8297d0da…"`, `synced_at="2026-10-18T20:52:24.529Z"`. `list_repos` then: `count="1"`, `source=mirror freshness=ttl ttl=600s present=true`, carrying *that* stamp. `sync_repo` took 887 ms and reported `20:52:25.491Z`; a final `list_repos` reported that newer value although `repos.json` on disk holds no time at all — the one-clock claim shown, not argued. `manual` mode and local clones were not exercised live (tests only). |
+| `v0.7.0` | `055d35a` | Phase 2c-2 — `add_repo` / `remove_repo`, and reading a project from a clone of your own: source resolution moved into a new `src/sources.ts`, the remote-tracking ref view a clone needs, a per-source fetch lock and clock, and a delete guard that never touches a clone. | ✅ The whole cycle against the pilot, driven through OpenCode. `remove_repo` → `list_repos` `count="0"` → `get_file` re-registered the **mirror** and answered `8297d0da…` at its `21:44:25.655Z`. `add_repo(local_path=…)` → `updated="true"`, "nothing was fetched"; `list_repos` `source=local … present=true … synced_at="unknown"`; `get_file` then answered from `refs/remotes/origin/fix/PROJ-7608` with `synced_at="unknown"` — no fetch, no mirror. `resolve_ref` named `refs/remotes/origin/…`. Deleting that ref took `list_refs` to `count="0"`, and the next `get_file` fetched it back from the clone's own remote (`21:45:08.982Z`), after which `list_refs` showed it again. `sync_repo` advanced the clone to `21:45:28.856Z` while the **mirror's** stamp stayed at `21:44:25.655Z`, with still exactly one mirror in the cache. `remove_repo(delete_mirror=true)` left the clone on disk and said so; the next read went back to the mirror. `git status --porcelain` in the clone was 0 bytes before and after every call, an untracked file left in place. Tests-only: a bare-repo registration, a clone with no remote, `always`/`manual` with a local source, and a vanished path. |
 
 Phase 0 predates the first tag: it was verified by hand — mirror clone succeeded,
 `fix/PROJ-7608` was present, `ls-tree` listed files, and
@@ -96,6 +97,11 @@ Running record of things learned while building. Keep appending.
 | 2026-10-18 | `manual` read strictly as "no automatic network access" raised a question the plan never asked: a first-use *clone* is automatic network access too, so a manual project with no mirror would have cloned itself on the first read. | Decided with the owner: `manual` suppresses the clone as well, and the read fails with *"\<project\> is in `manual` freshness mode and has no mirror yet. Run `sync_repo` to fetch it."* `ensureMirror` takes `allowClone`, which only `sync_repo` passes. A test asserts the mirror directory does not exist after the refused read. |
 | 2026-10-18 | `syncMirror(project)` had existed since Phase 1 with nothing calling it — `ensureMirror` plus `execFetch` in one method, superseded before it was ever used, and covered by no test. | Removed. `syncRepo` fills the role and reports the resulting `synced_at`, which is what `sync_repo` has to show. Two near-identical methods would have drifted. |
 | 2026-10-18 | A new store test asserted that a file's content matched `'main'`, but an earlier test in the same file commits `main-v2` to that branch, so the fresh mirror this test cloned saw the newer content and the assertion failed. The test was wrong, not the code. | Assert the stable part (`export const hello`) rather than a value a sibling test mutates. The second time this project has paid for a test that was wrong about shared state — cf. the fixture-versus-mirror confusion in Phase 2a. |
+| 2026-10-18 | **A clone does not hold the refs a mirror does.** After `git clone`, only the branch HEAD pointed at exists as a local ref; every other branch is `refs/remotes/<remote>/*`, where a bare name does not resolve — `git rev-parse fix/PROJ-7608` fails in a fresh clone although the branch is plainly there. 2c-2 exists to read a branch that is *not* checked out, so the feature as scoped would have failed its own primary case. Found while writing the local-clone tests, before the live check. | A read tries the local name first and then `refs/remotes/<remote>/<name>`, the local one winning when both exist so a clone answers with its own branch, unpushed commits included. `list_refs` lists both namespaces, reports each branch once, and skips `refs/remotes/<remote>/HEAD` (a symbolic ref, not a branch). `resolve_ref` calls a remote-only branch a `branch`, with `refname="refs/remotes/origin/…"`. Verified live: the test clone had exactly one local branch (`develop`), and `get_file` on `fix/PROJ-7608` answered from `refs/remotes/origin/fix/PROJ-7608`. |
+| 2026-10-18 | Live, the read from the clone reported `synced_at="unknown"` (no fetch had ever run there) while the same ref read through the mirror reported the mirror's stamp — so **one project now has two possible `synced_at` values**, depending on which source answered. | By design: the age shown is the age of the source that answered, and a clone keeps its own `mcp-last-sync` inside its own `.git`, so a miss fetched there leaves the mirror's clock alone. Measured live: the clone's stamp went to `21:45:08.982Z` on the miss and `21:45:28.856Z` on `sync_repo`, while the mirror stayed at `21:44:25.655Z` throughout. "One clock" therefore means one clock *per source*, not one per project — two honest ages, not an inconsistency. |
+| 2026-10-18 | `synced_at="unknown"`, open since `v0.5.1` and unit-tested only because that machine had no unstamped mirror, is **verified live**: the first read after `add_repo` reported `synced_at="unknown"`, and `list_refs` did too. | The rendering is real, not fixture-shaped. It doubles as the proof that the read served the clone *without fetching*, since any fetch would have written a stamp. |
+| 2026-10-18 | `remove_repo` forgetting a mirror-backed project **does not stick**: the next read registers it again and `list_repos` shows it again. It reads like a failed deletion until one remembers registration-on-use. | Deliberate, and stated on the tool itself: `remove_repo` is how a *local* registration is undone (that does stick, and is the way back to a mirror), and deleting the mirror is the separate `delete_mirror` flag, which a local registration reports as ignored. The 2c-1 wart ("one empty listing, once") is closed by `add_repo`, which registers a project explicitly before its first read: live, `add_repo(project)` with no path gave `source="mirror"` and the project appeared as `present=false` before anything was fetched. |
+| 2026-10-18 | "Never touches your working tree" is now measured rather than asserted: `git status --porcelain` was byte-identical (0 bytes) in the clone before and after `get_file`, `list_tree`, `list_refs`, a fetch-on-miss and a `sync_repo`, with a stray untracked file left in place. | Reads are `--git-dir` only; a fetch writes new objects, remote-tracking refs and the stamp into `.git`, which is the accepted decision of 2026-10-18. The fixture asserts the same, so it stays a guarantee rather than a one-off observation. |
 
 ---
 
@@ -103,6 +109,53 @@ Running record of things learned while building. Keep appending.
 
 What each phase actually touched. The plan keeps only the design; this is the
 blow-by-blow.
+
+### Phase 2c-2 artifacts
+
+- `src/sources.ts` — new. `SourceManager` takes the mechanics out of
+  `RepoStore`: `mirrorPath`, `cloneMirror`, `fetch` (a mirror, or a clone by its
+  detected remote name, through `--git-dir` plus `cwd`), `localSource` (a clone
+  or a bare repo resolved to `{ gitDir, workDir, remote }`), `isRepo`,
+  `remoteName`, `removeMirror` (refuses anything outside the cache's `mirrors/`),
+  the `mcp-last-sync` clock, and the per-source lock. It holds no policy: when to
+  fetch is decided in `RepoStore`, and only there. The move landed first and
+  unchanged, so the feature was a readable diff.
+- `src/registry.ts` — `set` (merges over the existing entry, so re-registering a
+  path cannot reset a hand-written policy; `localPath: undefined` clears it) and
+  `remove` (says whether there was anything to forget).
+- `src/repoStore.ts` — `resolveSource` in place of `ensureMirror` (a local entry
+  wins; otherwise clone-if-missing with the `manual` refusal), `sourceFor` /
+  `sourcePresent`, `refresh(project, source, reason)` with the local rules (no
+  TTL fetch, a miss fetches, `always` fetches, `manual` does nothing),
+  `addRepo` / `removeRepo`, the clone ref view (`refCandidates`, `classifyRef`,
+  `patternsFor`, `namedRef` over `refs/remotes/…`), and `listRepos` reporting a
+  local row — `present`, `local_path`, an age from the clone's own stamp — and
+  reading `present=false` instead of failing when the path is unusable.
+- `src/tools/repos.ts` — `add_repo` and `remove_repo`, plus source-aware wording
+  for `list_repos` and `sync_repo`.
+- `src/tools/files.ts`, `src/tools/refs.ts`, `src/config.ts`, `src/server.ts` —
+  wording only where "mirror" was not necessarily a mirror, and the two new tools
+  in the server instructions.
+- `test/local.test.ts` — new, 14 tests: a read served by the clone with no mirror
+  created for it, an unpushed commit answering, a bare repository, `git status`
+  byte-identical across reads, a branch only the remote has (invisible before,
+  fetched on a miss, listed once as a branch), a clone with no remote, `ttl`
+  versus `always` for a clone, the clone's own stamp, `add_repo` registering
+  before a read and refusing a bad path, a vanished path, `remove_repo` sparing a
+  clone and deleting a mirror, and the `removeMirror` guard.
+- `test/fixture.ts` — `publishBranchFromElsewhere`: a branch committed in a
+  throwaway clone of the fixture's "server", so `work` sees it only through a
+  fetch — the state every real clone is in for the branches it has not checked
+  out.
+- `test/registry.test.ts`, `test/protocol.test.ts` — `set`/`remove`, and both
+  tools as a client sees them. Suite: 136 tests / 24 suites (was 117 / 20).
+- Live check: a clone of the pilot project made **from our own mirror**, so the
+  check itself needed no network. Register, read (age `unknown`), delete one
+  remote-tracking ref and watch the miss fetch it back, `sync_repo`, then
+  `remove_repo` back onto the mirror. `git status` byte-identical throughout.
+- No new dependency, no new environment variable, no new configuration key: a
+  local clone is a registry entry, and `remove_repo` deletes only under
+  `<cache>/mirrors`.
 
 ### Phase 2c-1 artifacts
 

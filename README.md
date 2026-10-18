@@ -4,16 +4,17 @@ A small, read-only, **git-backed** MCP server for a self-managed GitLab.
 
 It lets an AI agent read files from **any branch, tag, or commit** — including
 branches that are not checked out locally — without ever touching your working
-tree. Content is read from local bare mirrors that the server keeps in a cache
-directory.
+tree. Content comes from a local bare mirror the server keeps in a cache
+directory, or from a clone of your own when you register one.
 
-> Phase 2c-1 implementation. Exposes `get_file`, `list_tree`, `list_refs`,
-> `resolve_ref`, plus `list_repos` and `sync_repo` for seeing and controlling
-> what is registered. Backed by local bare mirrors that keep themselves fresh
-> (TTL + fetch-on-miss), under a per-project policy that can turn that off.
-> See the plan at [`docs/plan.md`](docs/plan.md) — the canonical, in-repo design
-> document — and [`docs/history.md`](docs/history.md) for milestones, findings
-> and per-phase artifacts.
+> Phase 2c-2 implementation. Exposes `get_file`, `list_tree`, `list_refs`,
+> `resolve_ref`, plus `list_repos`, `add_repo`, `remove_repo` and `sync_repo` for
+> choosing and controlling where a project is read from. A project is read from a
+> bare mirror that keeps itself fresh (TTL + fetch-on-miss), or from a clone of
+> your own, which is read in place and fetched only when a ref it does not have
+> is asked for. See the plan at [`docs/plan.md`](docs/plan.md) — the canonical,
+> in-repo design document — and [`docs/history.md`](docs/history.md) for
+> milestones, findings and per-phase artifacts.
 
 ## Why git instead of the GitLab REST API?
 
@@ -88,24 +89,27 @@ Use the **absolute** path to `dist/index.js`: a global MCP server's working
 directory is the workspace it is launched from, not this project.
 
 The tools appear as `gitlab_get_file`, `gitlab_list_tree`, `gitlab_list_refs`,
-`gitlab_resolve_ref`, `gitlab_list_repos` and `gitlab_sync_repo`.
+`gitlab_resolve_ref`, `gitlab_list_repos`, `gitlab_add_repo`,
+`gitlab_remove_repo` and `gitlab_sync_repo`.
 
 ## Usage
 
 ```
 gitlab_list_repos()
+gitlab_add_repo(project="group/sub/repo", local_path="C:\\work\\repo")
 gitlab_sync_repo(project="group/sub/repo")
 gitlab_list_refs(project="group/sub/repo", kind="branches", search="PROJ")
 gitlab_resolve_ref(project="group/sub/repo", ref="fix/PROJ-7608")
 gitlab_list_tree(project="group/sub/repo", ref="fix/PROJ-7608", path="src")
 gitlab_get_file(project="group/sub/repo", ref="fix/PROJ-7608", path="src/index.tsx")
+gitlab_remove_repo(project="group/sub/repo")
 ```
 
 Start with `list_refs` to find the branch and `resolve_ref` to confirm it, use
 `list_tree` to see what is in it, then `get_file` to read a specific file. An
-agent can do all four against a repository it has never cloned. `list_repos` and
-`sync_repo` are the exception: they are about the server's own state rather than
-about reading content.
+agent can do all four against a repository it has never cloned. `list_repos`,
+`add_repo`, `remove_repo` and `sync_repo` are the exception: they are about the
+server's own state rather than about reading content.
 
 Results are wrapped so provenance is always visible:
 
@@ -124,8 +128,8 @@ tag     f1e2d3c4b5a6  v2.4.0            release 2.4.0
 ```
 
 `commit` is the exact commit the content came from, and `synced_at` is when the
-local mirror was last refreshed — so the answer states how fresh it is instead
-of quietly going stale.
+source that answered — the mirror, or a registered clone — was last refreshed,
+so the answer states how fresh it is instead of quietly going stale.
 
 `list_tree` marks directories and reports each file's size in bytes, so you can
 tell a small config from a bundle before reading it:
@@ -158,17 +162,49 @@ with `max_refs` and `max_entries` respectively) and say when they were cut short
 ## Repositories and policy
 
 A project registers itself the first time it is used — its mirror is cloned on
-demand — and the registry is a small `repos.json` in the cache directory:
+demand — or explicitly with `add_repo`. The registry is a small `repos.json` in
+the cache directory:
 
 ```
-<repos count="1">
-group/sub/repo	source=mirror	freshness=ttl	ttl=600s	present=true	synced_at="2026-10-18T20:52:24.529Z"
+<repos count="2">
+group/sub/repo	source=mirror	freshness=ttl	ttl=600s	present=true	synced_at="2026-10-18T21:44:25.655Z"
+group/sub/other	source=local	freshness=ttl	ttl=600s	present=true	local_path=C:\work\other	synced_at="unknown"
 </repos>
 ```
 
-`synced_at` is when the mirror last fetched **successfully**, or `unknown` when
+`synced_at` is when **that source** last fetched successfully, or `unknown` when
 no fetch has ever stamped it; `present=false` means the project is registered but
-its data is not on disk. `list_repos` costs no git call.
+its data is not on disk — a mirror that was never cloned, or a registered clone
+that has since been moved or deleted. The age shown belongs to the source that
+answered, so a clone and its mirror each report their own.
+
+### Reading from a clone of your own
+
+```
+gitlab_add_repo(project="group/sub/repo", local_path="C:\\work\\repo")
+```
+
+The path is checked there and then — it must exist and be a git repository, a
+working clone or a bare one — so a typo fails at the call that records it rather
+than at the read that would have used it. From then on every read runs against
+that clone: nothing is cloned, and nothing is written to your working tree, so
+uncommitted work is untouched. A branch that is not the checked-out one is still
+found, through its remote-tracking ref, because that is where `git clone` keeps
+every other branch. The remote is detected (`origin` when there is one), never
+assumed, and a clone with no remote still reads everything it holds — a miss
+there says so plainly instead of pretending the ref does not exist.
+
+```
+gitlab_add_repo(project="group/sub/repo")             # back to a mirror
+gitlab_remove_repo(project="group/sub/repo")          # forget it entirely
+gitlab_remove_repo(project="group/sub/repo", delete_mirror=True)
+```
+
+`remove_repo` never deletes a clone: that repository is yours, and the server
+only ever deletes inside its own `mirrors/` directory. Forgetting a mirror-backed
+project does not stick, because the next read registers it again; forgetting a
+*local* registration does, and is how a project goes back to being read from a
+mirror.
 
 A project's policy can be overridden by hand (absent fields mean the configured
 default):
@@ -188,14 +224,18 @@ default):
 }
 ```
 
-`sync_repo(project)` fetches immediately, ignoring the TTL. That is what makes
+`add_repo` merges into whatever is already recorded, so re-pointing a project at
+a path cannot quietly reset a `freshnessMode` you set by hand.
+
+`sync_repo(project)` fetches immediately, ignoring the TTL, and follows the
+project's source — a mirror, or the clone's own remote. That is what makes
 `manual` usable, and what to call when you want a fresh answer now. Unlike a
 read, it reports a failure as an error instead of answering from the cache.
 
-The registry deliberately records no fetch time: age comes from the mirror's own
-stamp (`mcp-last-sync`), so there is one clock and it cannot disagree with
-itself. A `repos.json` that does not parse is kept aside as
-`repos.json.corrupt` rather than deleted.
+The registry deliberately records no fetch time: age comes from the source's own
+stamp (`mcp-last-sync`, inside the mirror or inside the clone's `.git`), so there
+is one clock per source and it cannot disagree with itself. A `repos.json` that
+does not parse is kept aside as `repos.json.corrupt` rather than deleted.
 
 ## Freshness
 
@@ -203,20 +243,25 @@ Mirrors are cloned on first use and refreshed automatically, unless the policy i
 `manual`:
 
 - **TTL** — a read refreshes the mirror when it is older than
-  `GITLAB_FETCH_TTL_SECONDS` (default 10 minutes).
+  `GITLAB_FETCH_TTL_SECONDS` (default 10 minutes). Never a registered clone: it
+  is not a mirror of ours to keep fresh, and it is authoritative about the refs
+  it holds.
 - **Fetch-on-miss** — a ref that does not resolve locally triggers one extra
   fetch and retry, so a branch created moments ago is found without a manual
-  sync. (If the read already fetched, no second fetch is attempted.)
+  sync. (If the read already fetched, no second fetch is attempted.) This is the
+  one fetch a clone does get, and it goes to the clone's own remote.
 - **`always`** — set `GITLAB_FETCH_MODE=always` to fetch before every read when
-  correctness matters more than latency.
+  correctness matters more than latency. The one mode that fetches a clone on a
+  timer, because that is you asking.
 - **`manual`** — set `GITLAB_FETCH_MODE=manual`, or `freshnessMode: "manual"` for
   one project, and the server touches the network only when `sync_repo` asks it
   to: no TTL fetch, no fetch-on-miss, and not even the first-use clone. A project
   with no mirror yet is refused with a message naming `sync_repo`, and a ref that
   cannot be resolved says the same thing instead of implying that it does not
   exist.
-- **Serialised** — fetches are serialised per project, so parallel tool calls
-  never run overlapping fetches for the same repo.
+- **Serialised** — fetches are serialised per source, so parallel tool calls
+  never run overlapping fetches for the same repo, and a clone and a mirror never
+  wait on each other.
 
 One deliberate exception: **`list_refs` cannot use fetch-on-miss.** A ref that
 does not resolve is a detectable miss, but a *stale list* is not — a branch
@@ -226,10 +271,11 @@ anything is missing. So `list_refs` reports `synced_at` and leaves it at that.
 miss.
 
 Refresh timestamps are kept in memory and written to a stamp file inside the
-mirror (`mcp-last-sync`), so they survive a server restart. The stamp is written
-only after a fetch **succeeds** — git's own `FETCH_HEAD` is not used, because git
-stamps it before a fetch fails, which would make a rejected fetch indistinguishable
-from a fresh sync.
+source's git directory (`mcp-last-sync`), so they survive a server restart. The
+stamp is written only after a fetch **succeeds** — git's own `FETCH_HEAD` is not
+used, because git stamps it before a fetch fails, which would make a rejected
+fetch indistinguishable from a fresh sync. A registered clone keeps its own
+stamp in its own `.git`, so a fetch there says nothing about the mirror.
 
 **A refresh that fails does not fail the read.** When the mirror cannot be
 reached, or the token is rejected, the cached mirror answers and the result says
@@ -254,7 +300,9 @@ needed to find out what happened.
 | *GitLab could not find this project* | Check the project path (`group/subgroup/repo`) and the token's access to it. |
 | *TLS verification failed* | The server uses a private CA; point `GITLAB_CA_INFO` at the CA bundle. |
 | *Could not reach GitLab* | Network or VPN. |
-| `[refresh failed: …]` in a result | The mirror could not be refreshed, so the answer came from the cache as of `synced_at`. The note says why; the causes are the same as for a failed read. |
+| `[refresh failed: …]` in a result | The source could not be refreshed, so the answer came from the cache as of `synced_at`. The note says why; the causes are the same as for a failed read. |
+| *The registered clone at … is not a usable git repository* | The path recorded by `add_repo` has been moved, deleted or emptied. Run `add_repo` again with the current path, or `remove_repo` to go back to a mirror. |
+| *The registered clone at … has no remote to fetch from* | The clone has no remote configured, so a ref it does not already hold cannot be fetched. Everything it does hold still reads. |
 
 The credential case is worth one extra note: **a running MCP server keeps the
 token it started with.** Editing `GITLAB_TOKEN` does nothing to a server that is
@@ -302,11 +350,14 @@ server's reported version is asserted against `package.json` in the test suite.
 src/                    server source
 test/
   fixture.ts            builds the throwaway "GitLab"
-  store.test.ts         mirror resolution, guards, freshness, project policy
+  store.test.ts         source resolution, guards, freshness, project policy
   registry.test.ts      the registry file: parsing, persistence, corruption
+  local.test.ts         local clones: reading, misses, path and delete guards
   refs.test.ts          ref listing, resolution, close matches
   tree.test.ts          directory listings, the ls-tree parser, rendering
   repos.test.ts         rendering the registry listing
+  git.test.ts           the git wrapper
+  gitDiagnostics.test.ts  git stderr → actionable hint
   protocol.test.ts      the MCP surface over an in-memory transport
   startup.test.ts       the compiled entry point over real stdio
 tsconfig.json           typecheck: src/ + test/, no emit
@@ -322,7 +373,8 @@ tsconfig.build.json     emit: src/ only → dist/
   and `list_tree`.
 - **Phase 2c-1 (done):** the project registry, `list_repos`, `sync_repo`,
   per-project policy and `manual` freshness mode.
-- **Phase 2c-2 (next):** `add_repo`/`remove_repo`, and preferring a local clone
-  over a mirror.
-- **Phase 3:** `compare`, `diff_file`, `log`, `get_commit`, `blame`.
+- **Phase 2c-2 (done):** `add_repo`/`remove_repo`, and reading a project from a
+  clone of your own — including the branches that only exist as remote-tracking
+  refs there.
+- **Phase 3 (next):** `compare`, `diff_file`, `log`, `get_commit`, `blame`.
 - **Phase 4:** `search` (`git grep`), `pickaxe`, GitLab URL parser, polish.
