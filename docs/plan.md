@@ -254,8 +254,10 @@ truncation flag when output is capped.
 > **Status:** Phase 0 ✅ verified. Phase 1 ✅ implemented, locally tested and
 > **verified live** — the agent read `src/index.tsx` from `fix/PROJ-7608`
 > (commit `8297d0d`) through OpenCode. Tagged `v0.1.0`.
-> Phase 2a ✅ implemented and locally tested (20/20; freshness covered by real
-> clone/fetch against a fixture server). Phases 2b–4 not started.
+> Phase 2a ✅ implemented and locally tested (21/21, in three files run in
+> parallel; freshness covered by real clone/fetch against a fixture server),
+> with the suite moved from `scripts/` to `test/`. Tagged `v0.2.0`.
+> Phases 2b–4 not started.
 
 ### Source layout
 
@@ -499,6 +501,7 @@ Running record of things learned during Phase 0. Keep appending.
 | 2026-10-18 | `node --test <directory>` does not discover `.ts` files, and a glob passed to a shell is not expanded by `cmd` on Windows. | Pass a *quoted* glob: `node --import tsx --test "test/**/*.test.ts"`. Node expands it itself (verified on Node 24.21). |
 | 2026-10-18 | A single `tsconfig.json` with `rootDir: "src"` cannot also typecheck `test/`. | Split: `tsconfig.json` is a no-emit config covering `src/` + `test/`; `tsconfig.build.json` extends it with `rootDir: "src"` and emits to `dist/`. `npm run typecheck` now covers the tests. |
 | 2026-10-18 | Node's test runner executes one child process per test file, in parallel. | Each test file builds its own fixture under a distinct temp directory, so files never collide. |
+| 2026-10-18 | **Phase 2a complete.** TTL + fetch-on-miss freshness implemented and locally tested; the suite moved out of `scripts/` into `test/`. | Exit criterion met: a branch pushed minutes ago is readable and every read reports `synced_at`. Tagged `v0.2.0` on `1281009`. |
 
 ### Phase 2a artifacts
 
