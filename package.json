@@ -1,6 +1,6 @@
 {
   "name": "gitlab-readonly-mcp",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Read-only, git-backed MCP server for a self-managed GitLab",
