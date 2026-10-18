@@ -1,9 +1,15 @@
 # Normalise line endings so Windows and Unix contributors see identical diffs.
 * text=auto
 
+# Source, config and docs are stored AND checked out with LF.
 *.ts    text eol=lf
 *.mjs   text eol=lf
 *.json  text eol=lf
 *.jsonc text eol=lf
 *.md    text eol=lf
 *.yml   text eol=lf
+
+# Dotfiles have no extension, so match them by name.
+.editorconfig  text eol=lf
+.gitattributes text eol=lf
+.gitignore     text eol=lf
