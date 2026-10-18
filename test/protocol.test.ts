@@ -75,6 +75,33 @@ describe("MCP protocol", () => {
     }
   });
 
+  it("exposes list_repos and sync_repo", async () => {
+    const { tools } = await client.listTools();
+    const names = tools.map((tool) => tool.name);
+    for (const expected of ["list_repos", "sync_repo"]) {
+      assert.ok(names.includes(expected), `${expected} is missing; saw ${names.join(", ")}`);
+    }
+  });
+
+  it("reports a project once it has been used, and syncs it on demand", async () => {
+    await client.callTool({
+      name: "get_file",
+      arguments: { project: "demo", ref: "main", path: "src/index.tsx" },
+    });
+
+    const listed = await client.callTool({ name: "list_repos", arguments: {} });
+    assert.equal(listed.isError, undefined);
+    assert.match(textOf(listed), /<repos count="1">/);
+    assert.match(textOf(listed), /demo\tsource=mirror\tfreshness=ttl\tttl=600s\tpresent=true/);
+
+    const synced = await client.callTool({
+      name: "sync_repo",
+      arguments: { project: "demo" },
+    });
+    assert.equal(synced.isError, undefined);
+    assert.match(textOf(synced), /^<sync project="demo" synced_at="\d{4}-\d{2}-\d{2}T/);
+  });
+
   it("lists refs with provenance", async () => {
     const response = await client.callTool({
       name: "list_refs",

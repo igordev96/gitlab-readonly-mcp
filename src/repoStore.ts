@@ -1,8 +1,9 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { Config } from "./config.js";
+import type { Config, FetchMode } from "./config.js";
 import { Git, GitError, type GitRunResult } from "./git.js";
 import { explainGitError } from "./gitDiagnostics.js";
+import { RepoRegistry, type RepoEntry, type RepoSource } from "./registry.js";
 
 const PROJECT_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 export const DEFAULT_FILE_MAX_BYTES = 200_000;
@@ -154,6 +155,32 @@ export interface RefLookupResult {
   fetched: boolean;
   /** Set when the freshness check failed and this answer came from the cache. */
   refreshError?: string;
+}
+
+/** One registered project, as `list_repos` reports it. */
+export interface RepoSummary {
+  project: string;
+  source: RepoSource;
+  /** The effective policy: this project's override, else the configured default. */
+  freshnessMode: FetchMode;
+  freshnessTtlSeconds: number;
+  /** Whether the stored data is on disk: the mirror, or the registered clone. */
+  present: boolean;
+  /** Set for a local-clone registration. */
+  localPath?: string;
+  /** Last *successful* sync, from the mirror's stamp. Absent when never synced. */
+  syncedAt?: Date;
+}
+
+export interface RepoListing {
+  repos: RepoSummary[];
+}
+
+/** What `sync_repo` did. */
+export interface RepoSyncResult {
+  project: string;
+  dir: string;
+  syncedAt?: Date;
 }
 
 /** Trim, drop surrounding slashes, and drop a trailing `.git`. */
@@ -358,6 +385,8 @@ interface RefreshOutcome {
   fetched: boolean;
   /** Set when a fetch was attempted and failed. The mirror is still readable. */
   error?: string;
+  /** Set when policy forbade fetching, so nothing was attempted at all. */
+  skipped?: "manual";
 }
 
 interface ResolvedRef {
@@ -368,26 +397,35 @@ interface ResolvedRef {
   fetched: boolean;
   /** Set when the freshness check tried to fetch and could not. */
   refreshError?: string;
+  /** Set when the freshness check did not try, because the project is `manual`. */
+  skipped?: "manual";
 }
 
 /**
  * Resolves GitLab projects to a local git view and reads from them.
  *
- * Phase 2a keeps managed bare mirrors only (no local-clone preference yet); that
- * arrives with the repo registry in Phase 2c.
+ * Phase 2c-1 adds the project registry: a mirror is registered the first time it
+ * is used, the freshness policy can be overridden per project — including
+ * `manual`, which never fetches by itself — and `sync_repo` refreshes one on
+ * demand. An entry with `source: "local"` is reported by `list_repos` but not yet
+ * read from; that preference arrives in 2c-2.
  *
- * Freshness: mirrors are refreshed according to `fetchMode`/`fetchTtlSeconds`,
- * and a ref that is not found locally triggers one extra fetch before giving up.
- * The last sync time is exposed so callers can see how fresh an answer is.
+ * Freshness: a project is refreshed according to its policy (its registry entry,
+ * else `fetchMode`/`fetchTtlSeconds`), and a ref that is not found locally
+ * triggers one extra fetch before giving up. The last sync time is exposed so
+ * callers can see how fresh an answer is.
  */
 export class RepoStore {
   private readonly syncTimes = new Map<string, number>();
   private readonly fetchChains = new Map<string, Promise<unknown>>();
+  private readonly registry: RepoRegistry;
 
   constructor(
     private readonly config: Config,
     private readonly git: Git,
-  ) {}
+  ) {
+    this.registry = new RepoRegistry(config.cacheDir);
+  }
 
   /** Filesystem path of the bare mirror for a project. */
   mirrorPath(project: string): string {
@@ -409,12 +447,29 @@ export class RepoStore {
     }
   }
 
-  /** Clone the mirror if it is missing, and return its path. */
-  async ensureMirror(project: string): Promise<string> {
+  /**
+   * Clone the mirror if it is missing, and return its path.
+   *
+   * Cloning is network access, so `manual` forbids it as well: for such a project
+   * this throws until `sync_repo` is called, which is the one caller that passes
+   * `allowClone`.
+   */
+  async ensureMirror(project: string, options: { allowClone?: boolean } = {}): Promise<string> {
     const clean = validateProject(project);
     const dir = this.mirrorPath(clean);
     if (await this.exists(path.join(dir, "HEAD"))) {
+      // Registering on use, rather than only on clone, means a mirror created
+      // before the registry existed still turns up in `list_repos`.
+      await this.registerMirror(clean);
       return dir;
+    }
+
+    const { mode } = await this.policyFor(clean);
+    if (mode === "manual" && !options.allowClone) {
+      throw new Error(
+        `${clean} is in \`manual\` freshness mode and has no mirror yet. ` +
+          `Run \`sync_repo\` to fetch it.`,
+      );
     }
 
     await fs.mkdir(path.dirname(dir), { recursive: true });
@@ -433,19 +488,65 @@ export class RepoStore {
 
     // A clone is itself a sync: record it, so the first read does not fetch again.
     await this.recordSync(clean, dir);
+    await this.registerMirror(clean);
     process.stderr.write(`[gitlab-mcp] cloned ${clean}\n`);
     return dir;
   }
 
   /**
-   * Fetch a mirror unconditionally. Because it was created with `--mirror`, a
-   * plain fetch updates all refs, prunes deleted ones, and honours force-pushes.
+   * Fetch a project's mirror now, whatever its freshness policy says. This is the
+   * explicit control that makes `manual` usable, and the only fetch that bypasses
+   * the TTL.
+   *
+   * Because the mirror was created with `--mirror`, a plain fetch updates all
+   * refs, prunes deleted ones, and honours force-pushes.
+   *
+   * A failure here is the answer rather than a footnote: the caller asked for
+   * this fetch specifically, so it throws instead of answering from the cache.
    */
-  async syncMirror(project: string): Promise<string> {
+  async syncRepo(project: string): Promise<RepoSyncResult> {
     const clean = validateProject(project);
-    const dir = await this.ensureMirror(clean);
-    await this.execFetch(clean, dir);
-    return dir;
+    // The one place that may clone a `manual` project: this call is the operator
+    // asking for it.
+    const dir = await this.ensureMirror(clean, { allowClone: true });
+    await this.enqueue(clean, () => this.execFetch(clean, dir));
+    const syncMs = await this.lastSyncAt(clean, dir);
+    return {
+      project: clean,
+      dir,
+      syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
+    };
+  }
+
+  /**
+   * Every registered project, with its effective policy and how fresh it is.
+   *
+   * The sync time comes from the mirror's stamp rather than from a field in the
+   * registry, so there is one clock: a project that has never synced reports no
+   * time at all, instead of the moment it was registered.
+   */
+  async listRepos(): Promise<RepoListing> {
+    const repos: RepoSummary[] = [];
+    for (const { project, entry } of await this.registry.all()) {
+      const policy = this.effectivePolicy(entry);
+      const dir = this.sourceDir(project, entry);
+      const present = await this.sourcePresent(entry, dir);
+      let syncedAt: Date | undefined;
+      if (present && entry.source === "mirror" && dir !== undefined) {
+        const syncMs = await this.lastSyncAt(project, dir);
+        syncedAt = syncMs === undefined ? undefined : new Date(syncMs);
+      }
+      repos.push({
+        project,
+        source: entry.source,
+        freshnessMode: policy.mode,
+        freshnessTtlSeconds: policy.ttlSeconds,
+        present,
+        localPath: entry.localPath,
+        syncedAt,
+      });
+    }
+    return { repos };
   }
 
   /** Resolve a ref to a commit SHA, or undefined when it does not exist. */
@@ -465,12 +566,14 @@ export class RepoStore {
     const cleanProject = validateProject(project);
     const cleanRef = validateRef(ref);
 
-    const { dir, commit, fetched, refreshError } = await this.resolveWithFreshness(
+    const { dir, commit, fetched, refreshError, skipped } = await this.resolveWithFreshness(
       cleanProject,
       cleanRef,
     );
     if (!commit) {
-      throw new NotFoundError(await this.notFoundRefMessage(cleanProject, cleanRef, refreshError));
+      throw new NotFoundError(
+        await this.notFoundRefMessage(cleanProject, cleanRef, { refreshError, skipped }),
+      );
     }
 
     const named = await this.namedRef(dir, cleanRef);
@@ -556,12 +659,14 @@ export class RepoStore {
     const cleanPath = dirPath.trim() ? validateRepoPath(dirPath).replace(/\/+$/, "") : "";
     const recursive = options.recursive ?? false;
 
-    const { dir, commit, fetched, refreshError } = await this.resolveWithFreshness(
+    const { dir, commit, fetched, refreshError, skipped } = await this.resolveWithFreshness(
       cleanProject,
       cleanRef,
     );
     if (!commit) {
-      throw new NotFoundError(await this.notFoundRefMessage(cleanProject, cleanRef, refreshError));
+      throw new NotFoundError(
+        await this.notFoundRefMessage(cleanProject, cleanRef, { refreshError, skipped }),
+      );
     }
 
     // `commit:path` names the directory itself, so its *contents* are listed.
@@ -641,12 +746,14 @@ export class RepoStore {
     const cleanRef = validateRef(ref);
     const cleanPath = validateRepoPath(filePath);
 
-    const { dir, commit, fetched, refreshError } = await this.resolveWithFreshness(
+    const { dir, commit, fetched, refreshError, skipped } = await this.resolveWithFreshness(
       cleanProject,
       cleanRef,
     );
     if (!commit) {
-      throw new NotFoundError(await this.notFoundRefMessage(cleanProject, cleanRef, refreshError));
+      throw new NotFoundError(
+        await this.notFoundRefMessage(cleanProject, cleanRef, { refreshError, skipped }),
+      );
     }
 
     // Resolve by SHA so the path can never be mistaken for a ref, and so the
@@ -693,16 +800,25 @@ export class RepoStore {
     let fetched = first.fetched;
     let refreshError = first.error;
 
-    // Only a *miss* earns a second fetch. A refresh that failed is not retried:
-    // it would fail the same way, and its reason is worth passing on unchanged.
-    if (!commit && !first.fetched && !first.error) {
+    // Only a *miss* earns a second fetch, and only when policy allows fetching at
+    // all. A refresh that failed is not retried either: it would fail the same
+    // way, and its reason is worth passing on unchanged.
+    if (!commit && !first.fetched && !first.error && !first.skipped) {
       const second = await this.refresh(cleanProject, dir, "miss");
       commit = await this.revParse(dir, cleanRef);
       fetched = second.fetched;
       refreshError = second.error;
     }
 
-    return { dir, ref: cleanRef, project: cleanProject, commit, fetched, refreshError };
+    return {
+      dir,
+      ref: cleanRef,
+      project: cleanProject,
+      commit,
+      fetched,
+      refreshError,
+      skipped: first.skipped,
+    };
   }
 
   private async revParse(dir: string, ref: string): Promise<string | undefined> {
@@ -810,24 +926,84 @@ export class RepoStore {
    * work them out. Suggestions are a nicety: if listing refs fails for any
    * reason the plain message is still the right answer.
    *
-   * When the refresh failed, the message says so: every ref created since the
-   * last successful sync is invisible, so "not found" would otherwise read as
-   * proof that the ref does not exist.
+   * The message also says when the view behind the answer is out of date — after
+   * a failed refresh, or when policy forbade one — because otherwise "not found"
+   * reads as proof that the ref does not exist.
    */
   private async notFoundRefMessage(
     project: string,
     ref: string,
-    refreshError?: string,
+    outcome: { refreshError?: string; skipped?: "manual" } = {},
   ): Promise<string> {
     const suggestions = await this.suggestRefs(project, ref).catch(() => [] as RefEntry[]);
     const base = formatRefNotFound(project, ref, suggestions);
-    if (!refreshError) {
+    if (outcome.skipped === "manual") {
+      return (
+        `${base}\nThis project is in \`manual\` freshness mode, so the mirror was not ` +
+        `refreshed. Run \`sync_repo\` to fetch it, then try again.`
+      );
+    }
+    if (!outcome.refreshError) {
       return base;
     }
     return (
       `${base}\nThe mirror could not be refreshed either, so a ref created since ` +
-      `the last sync would not appear here: ${refreshError}`
+      `the last sync would not appear here: ${outcome.refreshError}`
     );
+  }
+
+  /**
+   * The policy for one project: its registry entry's overrides, else the
+   * configured default. Resolved in one place so that every caller agrees — two
+   * subtly different lookups is how a policy drifts.
+   */
+  private effectivePolicy(entry: RepoEntry | undefined): {
+    mode: FetchMode;
+    ttlSeconds: number;
+  } {
+    return {
+      mode: entry?.freshnessMode ?? this.config.fetchMode,
+      ttlSeconds: entry?.freshnessTtlSeconds ?? this.config.fetchTtlSeconds,
+    };
+  }
+
+  private async policyFor(
+    project: string,
+  ): Promise<{ mode: FetchMode; ttlSeconds: number }> {
+    return this.effectivePolicy(await this.registry.get(project));
+  }
+
+  /**
+   * Remember that a project has a mirror, so `list_repos` can report it.
+   *
+   * Best effort, deliberately: a registry that cannot be written is a stale
+   * listing, not a reason to fail a read that would otherwise have worked.
+   */
+  private async registerMirror(project: string): Promise<void> {
+    try {
+      await this.registry.ensure(project, { source: "mirror", cloneStrategy: "full" });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      process.stderr.write(
+        `[gitlab-mcp] could not record ${project} in the registry: ${this.redact(reason)}\n`,
+      );
+    }
+  }
+
+  /** Where a registration says a project's data lives. */
+  private sourceDir(project: string, entry: RepoEntry): string | undefined {
+    return entry.source === "local" ? entry.localPath : this.mirrorPath(project);
+  }
+
+  /**
+   * Whether a registration points at data that is really on disk. A mirror
+   * counts only when it has a HEAD; a clone is a directory that exists.
+   */
+  private async sourcePresent(entry: RepoEntry, dir: string | undefined): Promise<boolean> {
+    if (dir === undefined) {
+      return false;
+    }
+    return this.exists(entry.source === "mirror" ? path.join(dir, "HEAD") : dir);
   }
 
   /**
@@ -848,7 +1024,16 @@ export class RepoStore {
     reason: RefreshReason,
   ): Promise<RefreshOutcome> {
     const startedAt = Date.now();
-    const ttlMs = this.config.fetchMode === "always" ? 0 : this.config.fetchTtlSeconds * 1000;
+    const { mode, ttlSeconds } = await this.policyFor(project);
+
+    // `manual` means the operator decides when this project talks to the network,
+    // so not even a miss fetches. The read still answers — `syncedAt` carries its
+    // age — and a miss says how to refresh it.
+    if (mode === "manual") {
+      return { fetched: false, skipped: "manual" };
+    }
+
+    const ttlMs = mode === "always" ? 0 : ttlSeconds * 1000;
 
     return this.enqueue(project, async () => {
       const last = await this.lastSyncAt(project, dir);

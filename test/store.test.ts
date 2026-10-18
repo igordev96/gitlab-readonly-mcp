@@ -323,3 +323,145 @@ describe("failure reporting", () => {
     );
   });
 });
+
+describe("the project registry and freshness policy", () => {
+  const git = new Git({ bin: "git" });
+
+  /** Write a registry by hand, the way a user sets a per-project policy. */
+  function register(cache: string, repos: Record<string, unknown>): void {
+    fs.mkdirSync(cache, { recursive: true });
+    fs.writeFileSync(
+      path.join(cache, "repos.json"),
+      JSON.stringify({ version: 1, repos }),
+      "utf8",
+    );
+  }
+
+  const manual = { source: "mirror", cloneStrategy: "full", freshnessMode: "manual" };
+
+  it("registers a mirror the first time it is used", async () => {
+    const cache = path.join(fixture.root, "cache-register");
+    const store = new RepoStore(makeConfig({ cacheDir: cache }), git);
+    await store.readFile("demo", "main", "src/index.tsx");
+
+    const { repos } = await store.listRepos();
+    assert.equal(repos.length, 1);
+    const [repo] = repos;
+    assert.ok(repo, "expected one registered project");
+    assert.equal(repo.project, "demo");
+    assert.equal(repo.source, "mirror");
+    assert.equal(repo.freshnessMode, "ttl", "the configured default applies");
+    assert.equal(repo.freshnessTtlSeconds, 600);
+    assert.equal(repo.present, true);
+    assert.equal(repo.localPath, undefined);
+    assert.ok(repo.syncedAt instanceof Date, "a clone is a sync, so it has a time");
+  });
+
+  it("refuses to clone a manual project until sync_repo asks for it", async () => {
+    const cache = path.join(fixture.root, "cache-manual-clone");
+    register(cache, { demo: manual });
+    const store = new RepoStore(makeConfig({ cacheDir: cache }), git);
+
+    await assert.rejects(
+      () => store.readFile("demo", "main", "src/index.tsx"),
+      (error: Error) => {
+        assert.match(error.message, /manual/);
+        assert.match(error.message, /sync_repo/);
+        return true;
+      },
+    );
+    assert.equal(
+      fs.existsSync(store.mirrorPath("demo")),
+      false,
+      "manual mode must not clone on its own",
+    );
+
+    const synced = await store.syncRepo("demo");
+    assert.equal(synced.project, "demo");
+    assert.ok(synced.syncedAt instanceof Date);
+    assert.match((await store.readFile("demo", "main", "src/index.tsx")).content, /export const hello/);
+  });
+
+  it("does not fetch in manual mode even when the ref is missing", async () => {
+    // `always` in the config, to show the entry wins over it.
+    const cache = path.join(fixture.root, "cache-manual-miss");
+    register(cache, { demo: manual });
+    const store = new RepoStore(makeConfig({ cacheDir: cache, fetchMode: "always" }), git);
+
+    await store.syncRepo("demo");
+    // A branch the mirror has never seen; fetch-on-miss would once have found it.
+    addBranchWithFile(
+      fixture.work,
+      "feature/MANUAL",
+      "src/manual.ts",
+      "export const m = 1;\n",
+      "manual branch",
+    );
+
+    await assert.rejects(
+      () => store.readFile("demo", "feature/MANUAL", "src/manual.ts"),
+      (error: Error) => {
+        assert.match(error.message, /manual/);
+        assert.match(error.message, /sync_repo/);
+        return true;
+      },
+    );
+
+    await store.syncRepo("demo");
+    assert.match(
+      (await store.readFile("demo", "feature/MANUAL", "src/manual.ts")).content,
+      /m = 1/,
+    );
+  });
+
+  it("honours a project's `always` where the TTL would have skipped the fetch", async () => {
+    const cache = path.join(fixture.root, "cache-always");
+    register(cache, { demo: { ...manual, freshnessMode: "always" } });
+    // A TTL long enough that a `ttl` project would never refresh during a test.
+    const store = new RepoStore(makeConfig({ cacheDir: cache, fetchTtlSeconds: 86_400 }), git);
+
+    await store.listRefs("demo");
+    addBranchWithFile(
+      fixture.work,
+      "feature/ALWAYS",
+      "src/always.ts",
+      "export const a = 1;\n",
+      "always branch",
+    );
+
+    const listed = await store.listRefs("demo", { kind: "branches", search: "feature/ALWAYS" });
+    assert.equal(listed.refs.length, 1, "the override should have fetched");
+  });
+
+  it("leaves a branch pushed a moment ago invisible to a list while the TTL says fresh", async () => {
+    // Not a defect to fix here: a stale *list* carries no signal to act on, which
+    // is why `list_refs` reports `synced_at` and `resolve_ref` does the refreshing.
+    const cache = path.join(fixture.root, "cache-fresh-list");
+    const store = new RepoStore(makeConfig({ cacheDir: cache, fetchTtlSeconds: 86_400 }), git);
+
+    await store.listRefs("demo");
+    addBranchWithFile(
+      fixture.work,
+      "feature/TOOFRESH",
+      "src/fresh.ts",
+      "export const f = 1;\n",
+      "fresh branch",
+    );
+
+    const listed = await store.listRefs("demo", { kind: "branches", search: "feature/TOOFRESH" });
+    assert.equal(listed.refs.length, 0);
+  });
+
+  it("reports a project that is registered but not on disk", async () => {
+    const cache = path.join(fixture.root, "cache-absent");
+    register(cache, { demo: manual });
+    const store = new RepoStore(makeConfig({ cacheDir: cache }), git);
+
+    const { repos } = await store.listRepos();
+    const [repo] = repos;
+    assert.ok(repo, "expected the hand-written entry to be listed");
+    assert.equal(repo.present, false);
+    assert.equal(repo.freshnessMode, "manual");
+    assert.equal(repo.syncedAt, undefined, "no successful fetch has happened yet");
+  });
+});

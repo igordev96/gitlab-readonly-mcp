@@ -4,6 +4,7 @@ import type { Config } from "./config.js";
 import type { RepoStore } from "./repoStore.js";
 import { registerFileTools } from "./tools/files.js";
 import { registerRefTools } from "./tools/refs.js";
+import { registerRepoTools } from "./tools/repos.js";
 
 export const SERVER_NAME = "gitlab-readonly";
 
@@ -30,12 +31,14 @@ export function createServer(config: Config, store: RepoStore): McpServer {
         "Use `list_refs` to discover branches and tags, `resolve_ref` to turn a name " +
         "into a commit, `list_tree` to browse a directory, and `get_file` to read a " +
         "file — all without changing any working tree. Repositories are mirrored on " +
-        "first use.",
+        "first use; `list_repos` reports what is registered and how fresh it is, and " +
+        "`sync_repo` fetches one immediately.",
     },
   );
 
   registerFileTools(server, store, config);
   registerRefTools(server, store, config);
+  registerRepoTools(server, store, config);
 
   return server;
 }

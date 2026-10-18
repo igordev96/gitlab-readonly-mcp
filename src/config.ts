@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 
 /** How aggressively to refresh a mirror before reading from it. */
-export type FetchMode = "ttl" | "always";
+export type FetchMode = "ttl" | "always" | "manual";
 
 /** Resolved, validated runtime configuration. */
 export interface Config {
@@ -19,8 +19,10 @@ export interface Config {
   /** Optional CA bundle path for servers using a private CA. */
   caInfo?: string;
   /**
-   * `ttl` fetches only when the mirror is older than `fetchTtlSeconds`;
-   * `always` fetches before every read.
+   * The default freshness policy, used by every project without an override in
+   * the registry. `ttl` fetches only when the mirror is older than
+   * `fetchTtlSeconds`, `always` fetches before every read, and `manual` never
+   * fetches by itself — `sync_repo` is the only way to refresh such a project.
    */
   fetchMode: FetchMode;
   /** Age in seconds after which a mirror is considered stale. */
@@ -72,8 +74,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const caInfo = (env.GITLAB_CA_INFO ?? "").trim() || undefined;
 
   const rawMode = (env.GITLAB_FETCH_MODE ?? "ttl").trim().toLowerCase();
-  if (rawMode !== "ttl" && rawMode !== "always") {
-    throw new Error(`GITLAB_FETCH_MODE must be "ttl" or "always" (got "${rawMode}").`);
+  if (rawMode !== "ttl" && rawMode !== "always" && rawMode !== "manual") {
+    throw new Error(
+      `GITLAB_FETCH_MODE must be "ttl", "always" or "manual" (got "${rawMode}").`,
+    );
   }
 
   const rawTtl = (env.GITLAB_FETCH_TTL_SECONDS ?? String(DEFAULT_FETCH_TTL_SECONDS)).trim();
