@@ -123,6 +123,26 @@ Refresh timestamps are tracked in memory and fall back to the mirror's
 `FETCH_HEAD` mtime, which survives a server restart. Note that `git clone
 --mirror` does not create `FETCH_HEAD`; the clone time is recorded instead.
 
+## Troubleshooting
+
+A failed read explains itself: the cause, a hint when the failure is one we
+recognise, and git's own output as evidence (`git said: …`). No extra logging is
+needed to find out what happened.
+
+| What you see | What it means |
+|---|---|
+| *GitLab rejected the credentials* | `GITLAB_TOKEN` is missing, expired, or lacks `read_repository` access to the project. GitLab reports a project you cannot *see* as a 401 too, so a typo in the project path looks identical. |
+| *GitLab could not find this project* | Check the project path (`group/subgroup/repo`) and the token's access to it. |
+| *TLS verification failed* | The server uses a private CA; point `GITLAB_CA_INFO` at the CA bundle. |
+| *Could not reach GitLab* | Network or VPN. |
+
+The credential case is worth one extra note: **a running MCP server keeps the
+token it started with.** Editing `GITLAB_TOKEN` does nothing to a server that is
+already running, which makes a valid token look broken. Restart the client (for
+OpenCode, `opencode service restart`) after changing it.
+
+The first read of a project also clones it, so it is slow exactly once.
+
 ## Security
 
 - The token is only ever passed as `-c http.extraheader=…` on the git command

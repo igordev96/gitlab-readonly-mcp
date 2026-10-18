@@ -267,6 +267,7 @@ src/
   server.ts      # McpServer + tool registration
   config.ts      # env, host, cache dir, default project, fetch policy
   git.ts         # safe git exec wrapper (array args, no shell)
+  gitDiagnostics.ts  # classify git stderr into an actionable hint
   repoStore.ts   # mirror resolution, clone/fetch, ref resolution, freshness
   url.ts         # GitLab web URL -> {project, ref, path}      (Phase 4)
   tools/
@@ -501,6 +502,8 @@ Running record of things learned during Phase 0. Keep appending.
 | 2026-10-18 | `node --test <directory>` does not discover `.ts` files, and a glob passed to a shell is not expanded by `cmd` on Windows. | Pass a *quoted* glob: `node --import tsx --test "test/**/*.test.ts"`. Node expands it itself (verified on Node 24.21). |
 | 2026-10-18 | A single `tsconfig.json` with `rootDir: "src"` cannot also typecheck `test/`. | Split: `tsconfig.json` is a no-emit config covering `src/` + `test/`; `tsconfig.build.json` extends it with `rootDir: "src"` and emits to `dist/`. `npm run typecheck` now covers the tests. |
 | 2026-10-18 | Node's test runner executes one child process per test file, in parallel. | Each test file builds its own fixture under a distinct temp directory, so files never collide. |
+| 2026-10-19 | A live read failed with only *"Failed to clone \<project\> from \<host\>"*. The tool forwarded `error.message` and dropped the `GitError.stderr` field, so a rejected token was indistinguishable from a VPN outage; diagnosing it took manual probing. | `GitError.stderr` is now surfaced as a `git said: …` excerpt and classified by `src/gitDiagnostics.ts` into credentials / project path / private CA / network. Token redaction moved into `Git.redact` so every consumer gets it. Tested against real git stderr samples. |
+| 2026-10-19 | The real cause: the token in the environment was valid, but the MCP child process had been started before it was set, so the server authenticated with the previous (revoked) value. | Documented in README under Troubleshooting: a running server keeps the token it started with, so restart the client after changing it. The credential hint now says this in the failure message itself. |
 | 2026-10-18 | **Phase 2a complete.** TTL + fetch-on-miss freshness implemented and locally tested; the suite moved out of `scripts/` into `test/`. | Exit criterion met: a branch pushed minutes ago is readable and every read reports `synced_at`. Tagged `v0.2.0` on `1281009`. |
 
 ### Phase 2a artifacts
@@ -523,6 +526,19 @@ Running record of things learned during Phase 0. Keep appending.
 - `package.json` — `npm test` replaces `npm run smoke`; `build` points at
   `tsconfig.build.json`.
 - `AGENTS.md` — pre-commit sequence is now `npm run typecheck && npm test`.
+
+### Failure diagnostics (Phase 2a follow-up)
+
+- `src/gitDiagnostics.ts` — new: `hintForGitStderr` classifies credentials /
+  project path / private CA / network, and `explainGitError` composes the cause,
+  the hint and a truncated stderr excerpt.
+- `src/git.ts` — `Git.redact` is now the single place the token is stripped from
+  output.
+- `src/tools/files.ts` — a `GitError` is reported through `explainGitError`
+  rather than as a bare message.
+- `test/git.test.ts`, `test/gitDiagnostics.test.ts` — new units, driven by real
+  git stderr samples; `store.test.ts` and `protocol.test.ts` assert that the
+  evidence survives as far as the agent.
 
 ### Phase 1 artifacts
 
