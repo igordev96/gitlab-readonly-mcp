@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 
-/** How aggressively to refresh a mirror before reading from it. */
+/** How aggressively to refresh a project's local copy before reading from it. */
 export type FetchMode = "ttl" | "always" | "manual";
 
 /** Resolved, validated runtime configuration. */
@@ -20,7 +20,7 @@ export interface Config {
   caInfo?: string;
   /**
    * The default freshness policy, used by every project without an override in
-   * the registry. `ttl` fetches only when the mirror is older than
+   * the registry. `ttl` fetches a mirror only when it is older than
    * `fetchTtlSeconds`, `always` fetches before every read, and `manual` never
    * fetches by itself — `sync_repo` is the only way to refresh such a project.
    */

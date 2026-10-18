@@ -27,12 +27,13 @@ export function createServer(config: Config, store: RepoStore): McpServer {
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       instructions:
-        "Read-only access to a self-managed GitLab through local git mirrors. " +
+        "Read-only access to a self-managed GitLab through local git mirrors, or " +
+        "through your own clones when a project is registered with `add_repo`. " +
         "Use `list_refs` to discover branches and tags, `resolve_ref` to turn a name " +
         "into a commit, `list_tree` to browse a directory, and `get_file` to read a " +
         "file — all without changing any working tree. Repositories are mirrored on " +
-        "first use; `list_repos` reports what is registered and how fresh it is, and " +
-        "`sync_repo` fetches one immediately.",
+        "first use; `list_repos` reports what is registered and how fresh it is, " +
+        "`sync_repo` fetches one immediately, and `remove_repo` forgets one.",
     },
   );
 

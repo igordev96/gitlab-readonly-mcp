@@ -132,3 +132,31 @@ export function commitOnBranch(
   runGit(work, ["checkout", "-q", "main"]);
   publish(work);
 }
+
+/**
+ * Publish a branch the working checkout does not have, by committing it in a
+ * throwaway clone of the server.
+ *
+ * That is the state a real clone is in for every branch but its own: the branch
+ * exists only as `refs/remotes/<remote>/…`, where a bare name does not find it,
+ * so reading it is what exercises fetch-on-miss. `work` is left untouched.
+ */
+export function publishBranchFromElsewhere(
+  server: string,
+  branch: string,
+  relPath: string,
+  contents: string,
+): void {
+  const elsewhere = path.join(path.dirname(server), "elsewhere");
+  fs.rmSync(elsewhere, { recursive: true, force: true });
+  execFileSync(GIT, ["clone", "-q", server, elsewhere], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  runGit(elsewhere, ["checkout", "-q", "-b", branch]);
+  writeFile(elsewhere, relPath, contents);
+  runGit(elsewhere, ["add", "-A"]);
+  commit(elsewhere, "committed elsewhere");
+  runGit(elsewhere, ["push", "-q", "origin", `HEAD:refs/heads/${branch}`]);
+  fs.rmSync(elsewhere, { recursive: true, force: true });
+}

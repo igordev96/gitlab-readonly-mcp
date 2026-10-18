@@ -58,9 +58,10 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
       description:
         "Return the contents of a file at a given branch, tag, or commit WITHOUT checking it out. " +
         "Use this to inspect files on a branch other than the one currently checked out. " +
-        "The repository is mirrored locally on first use and refreshed when it goes stale; " +
-        "the result reports the resolved commit and the mirror's last sync time. If the mirror " +
-        "cannot be refreshed, the cached copy answers and the result says the refresh failed.",
+        "The repository is mirrored locally on first use and refreshed when it goes stale, or, " +
+        "for a project registered with `add_repo`, read from your own clone. The result reports " +
+        "the resolved commit and the last sync time. If the copy cannot be refreshed, the " +
+        "cached copy answers and the result says the refresh failed.",
       inputSchema: {
         ref: z
           .string()
@@ -137,7 +138,7 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
         "`recursive` to walk the whole subtree. Files carry their size in bytes, so you can " +
         "tell a small config from a bundle before reading it. Names are full paths relative to " +
         "the repository root. Everything comes from git, so no file is fetched to answer this. " +
-        "If the mirror cannot be refreshed, the cached copy answers and the result says the " +
+        "If the copy cannot be refreshed, the cached copy answers and the result says the " +
         "refresh failed.",
       inputSchema: {
         ref: z

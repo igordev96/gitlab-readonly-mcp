@@ -87,10 +87,10 @@ export function registerRefTools(server: McpServer, store: RepoStore, config: Co
       description:
         "List branch and/or tag names in a repository, without cloning it into a working tree. " +
         "Each row is `kind`, short commit, name, and the tip commit's subject. " +
-        "The list reflects the local mirror as of `synced_at` (by default at most 10 minutes old); " +
+        "The list reflects the local copy as of `synced_at` (by default at most 10 minutes old); " +
         "a ref created since that moment may be missing, because a stale list cannot be detected. " +
         "Use `resolve_ref` to check one specific ref, which does refresh on a miss. " +
-        "If the mirror cannot be refreshed, the cached copy answers and the result says the " +
+        "If the copy cannot be refreshed, the cached copy answers and the result says the " +
         "refresh failed.",
       inputSchema: {
         project: z
@@ -144,7 +144,7 @@ export function registerRefTools(server: McpServer, store: RepoStore, config: Co
         "Resolve a branch, tag, or revision to the full commit SHA it points at, and say what it is " +
         "(`branch`, `tag`, or `commit` for anything else). Use this to confirm a ref exists before " +
         "reading files from it. If the ref is missing, the error lists similar names, and it says " +
-        "so when the mirror could not be refreshed, since then a missing ref proves nothing.",
+        "so when the copy could not be refreshed, since then a missing ref proves nothing.",
       inputSchema: {
         ref: z
           .string()

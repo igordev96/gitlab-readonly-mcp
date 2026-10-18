@@ -249,6 +249,53 @@ describe("MCP protocol", () => {
     assert.match(text, /git said: /, "git's stderr must reach the agent, not be swallowed");
     assert.match(text, /does not appear to be a git repository/i);
   });
+
+  it("exposes add_repo and remove_repo", async () => {
+    const { tools } = await client.listTools();
+    const names = tools.map((tool) => tool.name);
+    for (const expected of ["add_repo", "remove_repo"]) {
+      assert.ok(names.includes(expected), `${expected} is missing; saw ${names.join(", ")}`);
+    }
+  });
+
+  it("reads from a registered clone, and can go back to a mirror", async () => {
+    // A project name of its own, so pointing `demo` at a clone cannot change what
+    // the tests above saw.
+    const added = await client.callTool({
+      name: "add_repo",
+      arguments: { project: "cloned", local_path: fixture.work },
+    });
+    const addedText = textOf(added);
+    assert.equal(added.isError, undefined);
+    assert.match(addedText, /^<repo project="cloned" source="local"/);
+    assert.match(addedText, /updated="false"/);
+    assert.match(addedText, /nothing was fetched/);
+
+    const listed = await client.callTool({ name: "list_repos", arguments: {} });
+    assert.match(
+      textOf(listed),
+      /cloned\tsource=local\tfreshness=ttl\tttl=600s\tpresent=true/,
+    );
+
+    const read = await client.callTool({
+      name: "get_file",
+      arguments: { project: "cloned", ref: "fix/TEST-1", path: "src/index.tsx" },
+    });
+    assert.equal(read.isError, undefined);
+    assert.match(textOf(read), /fix\/TEST-1/);
+
+    const removed = await client.callTool({
+      name: "remove_repo",
+      arguments: { project: "cloned", delete_mirror: true },
+    });
+    const removedText = textOf(removed);
+    assert.equal(removed.isError, undefined);
+    assert.match(removedText, /^<removed project="cloned" registered="true"/);
+    assert.match(removedText, /local clone was left alone/);
+
+    const after = await client.callTool({ name: "list_repos", arguments: {} });
+    assert.match(textOf(after), /count="1"/, "only the other project should remain");
+  });
 });
 
 // The same surface with a mirror that cannot be refreshed. From the tool's side a

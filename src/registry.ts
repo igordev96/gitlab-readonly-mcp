@@ -121,6 +121,30 @@ export class RepoRegistry {
     await this.persist(entries);
   }
 
+  /**
+   * Register or update a project, explicitly.
+   *
+   * The entry is merged over any existing one, so a field the caller did not
+   * mention survives: re-pointing a project at a local clone must not quietly
+   * reset a hand-written `freshnessMode`. Passing `localPath: undefined` clears
+   * it, which is how a project goes back to being mirror-backed.
+   */
+  async set(project: string, entry: Partial<RepoEntry> & { source: RepoSource }): Promise<void> {
+    const entries = await this.load();
+    entries.set(project, { cloneStrategy: "full", ...entries.get(project), ...entry });
+    await this.persist(entries);
+  }
+
+  /** Forget a project. Returns whether it had been registered. */
+  async remove(project: string): Promise<boolean> {
+    const entries = await this.load();
+    if (!entries.delete(project)) {
+      return false;
+    }
+    await this.persist(entries);
+    return true;
+  }
+
   private load(): Promise<Map<string, RepoEntry>> {
     this.loaded ??= this.read();
     return this.loaded;

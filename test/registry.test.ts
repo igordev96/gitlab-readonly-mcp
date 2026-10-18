@@ -139,4 +139,48 @@ describe("RepoRegistry", () => {
     assert.deepEqual(await registry.all(), []);
     assert.equal(fs.existsSync(`${registry.filePath()}.corrupt`), true);
   });
+
+  it("replaces an entry through `set`, keeping a policy it did not mention", async () => {
+    const registry = new RepoRegistry(freshCache("set"));
+    await registry.ensure("a/b", {
+      source: "mirror",
+      cloneStrategy: "full",
+      freshnessMode: "manual",
+    });
+
+    await registry.set("a/b", {
+      source: "local",
+      localPath: path.join("C:", "work", "b"),
+      cloneStrategy: "full",
+    });
+
+    const entry = await registry.get("a/b");
+    assert.equal(entry?.source, "local");
+    assert.equal(entry?.localPath, path.join("C:", "work", "b"));
+    assert.equal(entry?.freshnessMode, "manual", "a hand-written policy must survive add_repo");
+  });
+
+  it("clears localPath when a project goes back to being mirror-backed", async () => {
+    const cache = freshCache("set-clears");
+    const registry = new RepoRegistry(cache);
+    await registry.set("a/b", {
+      source: "local",
+      localPath: path.join("C:", "work", "b"),
+      cloneStrategy: "full",
+    });
+    await registry.set("a/b", { source: "mirror", localPath: undefined, cloneStrategy: "full" });
+
+    assert.equal((await registry.get("a/b"))?.localPath, undefined);
+    const onDisk = JSON.parse(fs.readFileSync(registry.filePath(), "utf8"));
+    assert.equal("localPath" in onDisk.repos["a/b"], false, "undefined is not serialised");
+  });
+
+  it("removes an entry, and says whether there was one", async () => {
+    const registry = new RepoRegistry(freshCache("remove"));
+    await registry.ensure("a/b", { source: "mirror", cloneStrategy: "full" });
+
+    assert.equal(await registry.remove("a/b"), true);
+    assert.equal(await registry.get("a/b"), undefined);
+    assert.equal(await registry.remove("a/b"), false, "forgetting twice is not an error");
+  });
 });
