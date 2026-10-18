@@ -7,8 +7,8 @@ branches that are not checked out locally — without ever touching your working
 tree. Content is read from local bare mirrors that the server keeps in a cache
 directory.
 
-> Phase 2a implementation. Currently exposes a single tool: `get_file`, backed by
-> local bare mirrors that keep themselves fresh (TTL + fetch-on-miss).
+> Phase 2b implementation. Exposes `get_file`, `list_refs`, and `resolve_ref`,
+> backed by local bare mirrors that keep themselves fresh (TTL + fetch-on-miss).
 > See the plan at [`docs/plan.md`](docs/plan.md) — the canonical, in-repo design
 > document.
 
@@ -81,13 +81,20 @@ Or add it to configuration by hand (`mcp.servers`):
 Use the **absolute** path to `dist/index.js`: a global MCP server's working
 directory is the workspace it is launched from, not this project.
 
-The tool appears as `gitlab_get_file`.
+The tools appear as `gitlab_get_file`, `gitlab_list_refs`, and
+`gitlab_resolve_ref`.
 
 ## Usage
 
 ```
+gitlab_list_refs(project="group/sub/repo", kind="branches", search="PROJ")
+gitlab_resolve_ref(project="group/sub/repo", ref="fix/PROJ-7608")
 gitlab_get_file(project="group/sub/repo", ref="fix/PROJ-7608", path="src/index.tsx")
 ```
+
+Start with `list_refs` to find the branch, `resolve_ref` to confirm it (and get
+its commit), then `get_file` to read from it. An agent can do all three against a
+repository it has never cloned.
 
 Results are wrapped so provenance is always visible:
 
@@ -97,13 +104,29 @@ Results are wrapped so provenance is always visible:
 </file>
 ```
 
+```
+<refs project="group/sub/repo" kind="all" default_branch="develop" count="3" synced_at="2026-10-18T09:12:44.318Z">
+branch  abc123def456  fix/PROJ-7608  PROJ-7608: adjust the header
+branch  9f8e7d6c5b4a  develop           Merge branch 'release' into develop
+tag     f1e2d3c4b5a6  v2.4.0            release 2.4.0
+</refs>
+```
+
 `commit` is the exact commit the content came from, and `synced_at` is when the
 local mirror was last refreshed — so the answer states how fresh it is instead
 of quietly going stale.
 
-Missing refs and missing paths return a clean error instead of a git stack trace.
-Binary files are refused. Output is capped (default 200 KB, override with
-`max_bytes`).
+Missing refs and missing paths return a clean error instead of a git stack trace,
+and a ref that does not exist suggests close matches:
+
+```
+Ref not found: "fix/PROJ-7609" in group/sub/repo. Did you mean:
+  fix/PROJ-7608 (branch)
+```
+
+Binary files are refused. File output is capped (default 200 KB, override with
+`max_bytes`); ref listings are capped too (default 200, override with
+`max_refs`) and say when they were cut short.
 
 ## Freshness
 
@@ -118,6 +141,13 @@ Mirrors are cloned on first use and refreshed automatically:
   correctness matters more than latency.
 - **Serialised** — fetches are serialised per project, so parallel tool calls
   never run overlapping fetches for the same repo.
+
+One deliberate exception: **`list_refs` cannot use fetch-on-miss.** A ref that
+does not resolve is a detectable miss, but a *stale list* is not — a branch
+pushed a minute ago simply is not in the list, with nothing to signal that
+anything is missing. So `list_refs` reports `synced_at` and leaves it at that.
+`resolve_ref` is the way to check one specific ref, because it does refresh on a
+miss.
 
 Refresh timestamps are tracked in memory and fall back to the mirror's
 `FETCH_HEAD` mtime, which survives a server restart. Note that `git clone
@@ -175,6 +205,7 @@ src/                    server source
 test/
   fixture.ts            builds the throwaway "GitLab"
   store.test.ts         mirror resolution, guards, freshness
+  refs.test.ts          ref listing, resolution, close matches
   protocol.test.ts      the MCP surface over an in-memory transport
   startup.test.ts       the compiled entry point over real stdio
 tsconfig.json           typecheck: src/ + test/, no emit
@@ -186,7 +217,8 @@ tsconfig.build.json     emit: src/ only → dist/
 - **Phase 1 (done):** stdio server + `get_file`.
 - **Phase 2a (done):** freshness — TTL, fetch-on-miss, per-project fetch lock,
   `synced_at` provenance.
-- **Phase 2b:** `list_tree`, `list_refs`, `resolve_ref`.
+- **Phase 2b:** `list_refs` and `resolve_ref` (done, plus close-match hints);
+  `list_tree` next.
 - **Phase 2c:** repo registry (`add_repo`/`list_repos`/`sync_repo`), prefer local
   clones, `manual` freshness mode.
 - **Phase 3:** `compare`, `diff_file`, `log`, `get_commit`, `blame`.

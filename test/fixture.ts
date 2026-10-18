@@ -65,17 +65,37 @@ export function buildFixture(root: string): Fixture {
   runGit(work, ["checkout", "-q", "-b", "fix/TEST-1"]);
   writeFile(work, "src/index.tsx", "export const hello = 'fix/TEST-1';\n");
   writeFile(work, "docs/readme.md", "# demo\n");
+  writeFile(work, "src/components/Button.tsx", "export const Button = () => null;\n");
   runGit(work, ["add", "-A"]);
   commit(work, "branch change");
 
   runGit(work, ["checkout", "-q", "main"]);
 
-  execFileSync(GIT, ["init", "--bare", "--quiet", server], {
+  // Annotated, so tests exercise tag peeling and not just lightweight refs.
+  execFileSync(
+    GIT,
+    ["-C", work, "-c", "user.email=test@example.com", "-c", "user.name=Test",
+      "tag", "-a", "v1.0", "-m", "release 1.0"],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+
+  // `-b main` so the server's HEAD names the branch it actually has; that is
+  // what `default_branch` is read from, and a real GitLab repo does the same.
+  execFileSync(GIT, ["init", "--bare", "--quiet", "-b", "main", server], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
   runGit(work, ["remote", "add", "origin", server]);
   publish(work);
+
+  // GitLab advertises `refs/merge-requests/*`, and a mirror clone copies every
+  // ref. The fixture carries one so that "keep MR refs out of listings" is a
+  // tested guarantee rather than an assumption.
+  runGit(server, [
+    "update-ref",
+    "refs/merge-requests/1/head",
+    runGit(work, ["rev-parse", "main"]).trim(),
+  ]);
 
   return { root, work, server };
 }

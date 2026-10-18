@@ -3,8 +3,8 @@
 > **This file is the canonical plan.** It lives in the repository at `docs/plan.md`
 > and is version-controlled alongside the code. Edit it here.
 
-Status: **Phase 2a complete** (freshness: TTL, fetch-on-miss, `synced_at`).
-Phase 1 verified live. Next: Phase 2b (`list_tree` / `list_refs` / `resolve_ref`).
+Status: **Phase 2b in progress** — `list_refs` and `resolve_ref` implemented
+(2b-1). Phases 0, 1 and 2a complete and verified live. Next: `list_tree` (2b-2).
 Owner: igordev96
 Author: OpenCode
 
@@ -105,7 +105,9 @@ resolve(project, ref):
        c. if still missing -> clean "ref not found" error listing close matches
 ```
 
-Step 3 is what makes a brand-new branch appear without a manual sync.
+Step 3 is what makes a brand-new branch appear without a manual sync. Step 3c is
+implemented (`src/repoStore.ts`: `rankSimilar`, surfaced by `resolve_ref` and by
+`get_file`'s not-found error).
 
 ### 3.4 Freshness strategy (core concern)
 
@@ -128,6 +130,11 @@ old branch. Mitigations:
    returns last-fetch times so you can see which are stale.
 6. **Concurrency:** serialize fetch per project (a simple in-process lock) so
    parallel tool calls don't run overlapping fetches.
+7. **Where fetch-on-miss cannot help:** listing refs. A ref that fails to resolve
+   is a detectable miss, so we can fetch and retry; a *stale list* is not — a
+   branch pushed a minute ago is simply absent, with no signal that anything is
+   missing. `list_refs` therefore reports `synced_at` and nothing more, and
+   `resolve_ref` remains the way to check one specific ref.
 
 > **Phase 2a status (implemented):** items 1, 3, 4 and 6, plus the `ttl` and
 > `always` modes from item 2. `manual` mode and the explicit controls in item 5
@@ -165,10 +172,12 @@ Tool names are exposed by OpenCode as `gitlab_<tool>`.
 - `remove_repo(project, deleteMirror?)`.
 
 **Reads (core)**
-- `get_file(project, ref, path)` — `git show <ref>:<path>`.
-- `list_tree(project, ref, path)` — `git ls-tree`.
-- `list_refs(project, kind=branches|tags, search?)`.
-- `resolve_ref(project, name)` — sha existence + close matches.
+- `get_file(project, ref, path)` — `git show <ref>:<path>`. ✅
+- `list_tree(project, ref, path, recursive?, max_entries?)` — `git ls-tree`.
+- `list_refs(project, kind=branches|tags|all, search?, max_refs?)` — `git for-each-ref`,
+  scoped to `refs/heads` + `refs/tags`. ✅
+- `resolve_ref(project, ref)` — sha existence + close matches. ✅
+  (Named `ref` rather than the original `name`, to match `get_file`.)
 
 **Diff & history (selected extras)**
 - `compare(project, from, to, path?)` — `git diff`.
@@ -246,7 +255,8 @@ truncation flag when output is capped.
 | 0 | Manual plumbing proof (see §9) | `git show fix/PROJ-7608:src/index.tsx` prints the file |
 | 1 | MCP skeleton: stdio + `get_file`, wired into OpenCode | Agent reads a file from `fix/PROJ-7608` via MCP |
 | 2a | Freshness: TTL + fetch-on-miss, per-project fetch lock, `synced_at` provenance | A branch pushed minutes ago is readable; every read reports how fresh it is |
-| 2b | `list_tree`, `list_refs`, `resolve_ref` | Agent can explore a repo it never cloned |
+| 2b-1 | `list_refs`, `resolve_ref`, close-match hints | Agent can find and confirm a branch before reading it |
+| 2b-2 | `list_tree` | Agent can browse a tree it never cloned |
 | 2c | Repo registry: `add_repo`/`list_repos`/`sync_repo`, mirror+local resolution, `manual` mode | Local clones are preferred; mirrors can be synced on demand |
 | 3 | Diff & history: `compare`, `diff_file`, `log`, `get_commit`, `blame` | "What changed between `develop` and `fix/PROJ-7608`?" works |
 | 4 | Polish: `search`, `pickaxe`, URL parser, truncation, caching, stale-visibility | Freshness provenance visible on every read |
@@ -259,7 +269,9 @@ truncation flag when output is capped.
 > from `scripts/` to `test/`. Tagged `v0.2.0`.
 > Failure diagnostics ✅ added on top: git's stderr is surfaced and classified
 > instead of being swallowed. Tagged `v0.2.1`.
-> Phases 2b–4 not started.
+> Phase 2b-1 ✅ implemented and tested: `list_refs`, `resolve_ref`, and
+> close-match hints (which also improved `get_file`'s not-found error).
+> Phase 2b-2 (`list_tree`) and phases 2c–4 not started.
 
 ### Source layout
 
@@ -273,10 +285,16 @@ src/
   repoStore.ts   # mirror resolution, clone/fetch, ref resolution, freshness
   url.ts         # GitLab web URL -> {project, ref, path}      (Phase 4)
   tools/
-    repos.ts  files.ts  refs.ts  history.ts  search.ts          (growing by phase)
+    result.ts      # shared tool result shapes and error rendering
+    files.ts       # get_file
+    refs.ts        # list_refs, resolve_ref                        ✅ Phase 2b-1
+    repos.ts  history.ts  search.ts                                (later phases)
 test/
   fixture.ts     # builds a throwaway "GitLab" (working repo + bare server)
   store.test.ts  # mirror resolution, guards, freshness
+  refs.test.ts   # ref listing, resolution, close matches
+  git.test.ts    # the git wrapper
+  gitDiagnostics.test.ts  # git stderr -> actionable hint
   protocol.test.ts   # the MCP surface over an in-memory transport
   startup.test.ts    # the compiled entry point over real stdio
 tsconfig.json        # typecheck: src/ + test/, noEmit
@@ -508,6 +526,32 @@ Running record of things learned during Phase 0. Keep appending.
 | 2026-10-19 | The real cause: the token in the environment was valid, but the MCP child process had been started before it was set, so the server authenticated with the previous (revoked) value. | Documented in README under Troubleshooting: a running server keeps the token it started with, so restart the client after changing it. The credential hint now says this in the failure message itself. |
 | 2026-10-19 | **Phase 2a verified live.** After the token fix, a read of `src/index.tsx` on `fix/PROJ-7608` through OpenCode returned both `commit` and `synced_at`. | Freshness is confirmed end to end, not just against the fixture. Tagged `v0.2.1` on `f91fd4f` together with the failure diagnostics. |
 | 2026-10-18 | **Phase 2a complete.** TTL + fetch-on-miss freshness implemented and locally tested; the suite moved out of `scripts/` into `test/`. | Exit criterion met: a branch pushed minutes ago is readable and every read reports `synced_at`. Tagged `v0.2.0` on `1281009`. |
+| 2026-10-18 | GitLab advertises `refs/merge-requests/*` (one per MR), and `git clone --mirror` copies **every** ref the server offers. An unfiltered "all refs" listing would therefore be dominated by merge requests. | `list_refs` is scoped to `refs/heads` + `refs/tags`. The fixture carries an MR ref so this stays a tested guarantee, not an assumption. |
+| 2026-10-18 | A first run of the new tests reported `default_branch="master"` for a repository whose only branch is `main`. The fixture's bare "server" was created with `git init --bare` and no `-b`, so its HEAD named a branch that never existed. | Fixture initialises the server with `-b main`. Worth noting because the mirror's HEAD is copied from the remote's HEAD — a real GitLab repo has this right, a hand-made bare repo may not. |
+| 2026-10-18 | `%(committerdate:iso-strict)` on an annotated tag reflects the tag object, not the commit it points at; only `%(*committerdate:iso-strict)` is dereferenced. | Read both fields and prefer the dereferenced one, matching how `%(objectname)`/`%(*objectname)` are used to peel tags to their commit. |
+| 2026-10-18 | A tool-callback result typed as an **interface** failed to compile against the SDK (`Index signature for type 'string' is missing`), while the identical shape as a **type alias** compiled. | Only object-literal-typed aliases get an implicit index signature; interfaces do not. `ToolTextResult` in `src/tools/result.ts` is a type alias for this reason. |
+
+### Phase 2b-1 artifacts
+
+- `src/repoStore.ts` — `listRefs`, `resolveRefInfo`, `suggestRefs`, and the
+  internals behind them (`rawRefs` reading a NUL-separated `for-each-ref`
+  format, `defaultBranch`, `namedRef`); exported `rankSimilar`, `editDistance`
+  and `formatRefNotFound`. `readFile`'s missing-ref error now carries close
+  matches. New caps: `DEFAULT_MAX_ENTRIES` (200), `HARD_MAX_ENTRIES` (5000).
+- `src/tools/refs.ts` — new: `list_refs` and `resolve_ref`, with `formatRefList`
+  / `formatResolvedRef` kept as plain functions so the rendering is testable.
+- `src/tools/result.ts` — new: shared `textResult` / `errorResult` /
+  `failureMessage` and the single "no project" message, now used by both tool
+  modules.
+- `src/server.ts` — registers the ref tools; instructions now point at
+  `list_refs` → `resolve_ref` → `get_file`.
+- `test/fixture.ts` — adds annotated tag `v1.0`, a nested directory, a
+  `refs/merge-requests/1/head` ref, and `-b main` on the bare server.
+- `test/refs.test.ts` — new; `test/protocol.test.ts` extended. Suite: 60 tests /
+  11 suites (was 38 / 8).
+
+Known loose end: `SERVER_VERSION` in `src/server.ts` still reads `0.1.0` while
+the newest tag is `v0.2.1`. It should be bumped when this work is tagged.
 
 ### Phase 2a artifacts
 

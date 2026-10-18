@@ -64,6 +64,62 @@ describe("MCP protocol", () => {
     assert.ok(tools.some((tool) => tool.name === "get_file"), "get_file is missing");
   });
 
+  it("exposes list_refs and resolve_ref", async () => {
+    const { tools } = await client.listTools();
+    const names = tools.map((tool) => tool.name);
+    for (const expected of ["list_refs", "resolve_ref"]) {
+      assert.ok(names.includes(expected), `${expected} is missing; saw ${names.join(", ")}`);
+    }
+  });
+
+  it("lists refs with provenance", async () => {
+    const response = await client.callTool({
+      name: "list_refs",
+      arguments: { project: "demo", kind: "all" },
+    });
+    const text = textOf(response);
+    assert.match(text, /^<refs /);
+    assert.match(text, /default_branch="main"/);
+    assert.match(text, /synced_at="\d{4}-\d{2}-\d{2}T/);
+    assert.match(text, /branch\t[0-9a-f]{12}\tfix\/TEST-1/);
+    assert.match(text, /tag\t[0-9a-f]{12}\tv1\.0/);
+  });
+
+  it("filters refs by search", async () => {
+    const response = await client.callTool({
+      name: "list_refs",
+      arguments: { project: "demo", search: "fix/" },
+    });
+    const text = textOf(response);
+    assert.match(text, /count="1"/);
+    assert.match(text, /fix\/TEST-1/);
+  });
+
+  it("resolves a branch to a full sha", async () => {
+    const response = await client.callTool({
+      name: "resolve_ref",
+      arguments: { project: "demo", ref: "fix/TEST-1" },
+    });
+    const text = textOf(response);
+    assert.match(text, /^<ref /);
+    assert.match(text, /kind="branch"/);
+    assert.match(text, /refname="refs\/heads\/fix\/TEST-1"/);
+    assert.match(text, /commit="[0-9a-f]{40}"/);
+  });
+
+  it("suggests near misses for an unknown ref", async () => {
+    const response = (await client.callTool({
+      name: "resolve_ref",
+      arguments: { project: "demo", ref: "fix/TEST-2" },
+    })) as unknown as TextResult;
+
+    assert.equal(response.isError, true);
+    const text = textOf(response);
+    assert.match(text, /Ref not found/);
+    assert.match(text, /Did you mean:/);
+    assert.match(text, /fix\/TEST-1 \(branch\)/);
+  });
+
   it("returns file contents for a ref that is not checked out", async () => {
     const response = await client.callTool({
       name: "get_file",

@@ -5,6 +5,20 @@ import { Git, GitError } from "./git.js";
 
 const PROJECT_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 export const DEFAULT_FILE_MAX_BYTES = 200_000;
+/** Default cap on the number of refs or entries a listing returns. */
+export const DEFAULT_MAX_ENTRIES = 200;
+/** Absolute cap on a listing, so one call can never dump an unbounded result. */
+export const HARD_MAX_ENTRIES = 5_000;
+
+/**
+ * `for-each-ref` output format for one ref, NUL-separated so commit subjects
+ * cannot be confused with field boundaries. The dereferenced fields (`*`) are
+ * present only for annotated tags, which is how tags get peeled to a commit.
+ */
+const REF_FORMAT =
+  "%(refname)%00%(objectname)%00%(*objectname)%00" +
+  "%(committerdate:iso-strict)%00%(*committerdate:iso-strict)%00%(subject)";
+const REF_MAX_BYTES = 4 * 1024 * 1024;
 
 /** Thrown when a ref or file path does not exist (as opposed to a hard failure). */
 export class NotFoundError extends Error {
@@ -25,6 +39,60 @@ export interface FileReadResult {
   /** When the mirror backing this read was last synchronised, if known. */
   syncedAt?: Date;
   /** True when this read triggered a fetch. */
+  fetched: boolean;
+}
+
+/** Which refs a listing should include. */
+export type RefKindFilter = "branches" | "tags" | "all";
+
+/** `branch`/`tag` for a named ref; `commit` for any other revision. */
+export type RefKind = "branch" | "tag" | "commit";
+
+export interface RefEntry {
+  /** Short name, e.g. `fix/PROJ-7608` or `v1.0`. */
+  name: string;
+  /** Full ref name, e.g. `refs/heads/fix/PROJ-7608`. */
+  refname: string;
+  kind: "branch" | "tag";
+  /** Commit the ref points at (annotated tags are peeled to their commit). */
+  commit: string;
+  /** Commit date, ISO 8601. */
+  date?: string;
+  /** First line of the commit (or annotated tag) message. */
+  subject?: string;
+}
+
+export interface ListRefsOptions {
+  kind?: RefKindFilter;
+  /** Case-insensitive substring of the short ref name. */
+  search?: string;
+  maxEntries?: number;
+}
+
+export interface RefListResult {
+  project: string;
+  kind: RefKindFilter;
+  refs: RefEntry[];
+  /** Number of refs that matched before the cap was applied. */
+  total: number;
+  truncated: boolean;
+  /** The repository's default branch, when the mirror knows one. */
+  defaultBranch?: string;
+  /** When the mirror backing this listing was last synchronised, if known. */
+  syncedAt?: Date;
+  /** True when this listing triggered a fetch. */
+  fetched: boolean;
+}
+
+export interface RefLookupResult {
+  project: string;
+  ref: string;
+  /** The commit the ref resolves to. */
+  commit: string;
+  kind: RefKind;
+  /** Full ref name, present only when the ref really is a branch or a tag. */
+  refname?: string;
+  syncedAt?: Date;
   fetched: boolean;
 }
 
@@ -77,6 +145,101 @@ export function validateRepoPath(filePath: string): string {
     throw new Error("path contains illegal characters.");
   }
   return value.replace(/^\/+/, "");
+}
+
+/**
+ * Levenshtein distance between two strings, using two rolling rows so memory
+ * stays proportional to the shorter string rather than to the product.
+ */
+export function editDistance(a: string, b: string): number {
+  if (a === b) {
+    return 0;
+  }
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  if (short.length === 0) {
+    return long.length;
+  }
+
+  let previous = Array.from({ length: short.length + 1 }, (_, index) => index);
+  let current = new Array<number>(short.length + 1);
+
+  for (let i = 1; i <= long.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= short.length; j += 1) {
+      // Both rows are fully populated up to `short.length` on every pass.
+      const deletion = previous[j]! + 1;
+      const insertion = current[j - 1]! + 1;
+      const substitution = previous[j - 1]! + (long.charAt(i - 1) === short.charAt(j - 1) ? 0 : 1);
+      current[j] = Math.min(deletion, insertion, substitution);
+    }
+    [previous, current] = [current, previous];
+  }
+
+  return previous[short.length]!;
+}
+
+/**
+ * Rank refs by how likely they are to be what `query` meant: names containing
+ * the query (or contained in it) first, then the nearest by edit distance.
+ * The distance budget scales with the query so short names do not match
+ * everything.
+ */
+export function rankSimilar(refs: RefEntry[], query: string, limit = 5): RefEntry[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle || limit <= 0) {
+    return [];
+  }
+  const budget = Math.max(3, Math.ceil(needle.length / 3));
+
+  const scored: Array<{ entry: RefEntry; distance: number; contains: boolean }> = [];
+  for (const entry of refs) {
+    const name = entry.name.toLowerCase();
+    const contains = name.includes(needle) || needle.includes(name);
+    const distance = editDistance(name, needle);
+    if (contains || distance <= budget) {
+      scored.push({ entry, distance, contains });
+    }
+  }
+
+  scored.sort(
+    (a, b) =>
+      Number(b.contains) - Number(a.contains) ||
+      a.distance - b.distance ||
+      a.entry.name.localeCompare(b.entry.name),
+  );
+
+  return scored.slice(0, limit).map((item) => item.entry);
+}
+
+/**
+ * Ref namespaces to query for a given filter.
+ *
+ * Deliberately limited to branches and tags. GitLab also advertises
+ * `refs/merge-requests/*` (one per merge request) and a mirror clone copies
+ * every ref, so "everything" would bury the two namespaces anyone actually asks
+ * for.
+ */
+function patternsFor(kind: RefKindFilter): string[] {
+  if (kind === "branches") {
+    return ["refs/heads"];
+  }
+  if (kind === "tags") {
+    return ["refs/tags"];
+  }
+  return ["refs/heads", "refs/tags"];
+}
+
+/** A "did you mean" message for an unresolvable ref, with suggestions if any. */export function formatRefNotFound(
+  project: string,
+  ref: string,
+  suggestions: RefEntry[] = [],
+): string {
+  const base = `Ref not found: "${ref}" in ${project}.`;
+  if (suggestions.length === 0) {
+    return base;
+  }
+  const lines = suggestions.map((entry) => `  ${entry.name} (${entry.kind})`);
+  return `${base} Did you mean:\n${lines.join("\n")}`;
 }
 
 type RefreshReason = "ttl" | "miss";
@@ -173,6 +336,77 @@ export class RepoStore {
     return commit;
   }
 
+  /** Resolve a ref and describe what it is: a branch, a tag, or a bare revision. */
+  async resolveRefInfo(project: string, ref: string): Promise<RefLookupResult | undefined> {
+    const cleanProject = validateProject(project);
+    const cleanRef = validateRef(ref);
+
+    const { dir, commit, fetched } = await this.resolveWithFreshness(cleanProject, cleanRef);
+    if (!commit) {
+      return undefined;
+    }
+
+    const named = await this.namedRef(dir, cleanRef);
+    const syncMs = await this.lastSyncAt(cleanProject, dir);
+    return {
+      project: cleanProject,
+      ref: cleanRef,
+      commit,
+      kind: named?.kind ?? "commit",
+      refname: named?.refname,
+      syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
+      fetched,
+    };
+  }
+
+  /**
+   * List branches and/or tags.
+   *
+   * Freshness works like a read: the mirror is refreshed when it is past its TTL.
+   * Unlike resolving a ref there is no fetch-on-miss, because a *stale* list is
+   * not detectably wrong — a missing branch simply is not there. Callers should
+   * therefore treat `syncedAt` as the age of the answer.
+   */
+  async listRefs(project: string, options: ListRefsOptions = {}): Promise<RefListResult> {
+    const cleanProject = validateProject(project);
+    const kind: RefKindFilter = options.kind ?? "branches";
+    const dir = await this.ensureMirror(cleanProject);
+    const fetched = await this.refresh(cleanProject, dir, "ttl");
+
+    let refs = await this.rawRefs(dir, patternsFor(kind));
+
+    const search = options.search?.trim().toLowerCase();
+    if (search) {
+      refs = refs.filter((entry) => entry.name.toLowerCase().includes(search));
+    }
+
+    const limit = Math.min(options.maxEntries ?? DEFAULT_MAX_ENTRIES, HARD_MAX_ENTRIES);
+    const total = refs.length;
+    const truncated = total > limit;
+    const syncMs = await this.lastSyncAt(cleanProject, dir);
+
+    return {
+      project: cleanProject,
+      kind,
+      refs: truncated ? refs.slice(0, limit) : refs,
+      total,
+      truncated,
+      defaultBranch: await this.defaultBranch(dir),
+      syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
+      fetched,
+    };
+  }
+
+  /** Ref names close to `ref`, for a "did you mean" hint on a failed lookup. */
+  async suggestRefs(project: string, ref: string, limit = 5): Promise<RefEntry[]> {
+    const cleanProject = validateProject(project);
+    const cleanRef = validateRef(ref);
+    const dir = await this.ensureMirror(cleanProject);
+    await this.refresh(cleanProject, dir, "ttl");
+    const refs = await this.rawRefs(dir, ["refs/heads", "refs/tags"]);
+    return rankSimilar(refs, cleanRef, limit);
+  }
+
   /** Read a file at a ref, without touching any working tree. */
   async readFile(
     project: string,
@@ -186,7 +420,7 @@ export class RepoStore {
 
     const { dir, commit, fetched } = await this.resolveWithFreshness(cleanProject, cleanRef);
     if (!commit) {
-      throw new NotFoundError(`Ref not found: "${cleanRef}" in ${cleanProject}.`);
+      throw new NotFoundError(await this.notFoundRefMessage(cleanProject, cleanRef));
     }
 
     // Resolve by SHA so the path can never be mistaken for a ref, and so the
@@ -248,6 +482,105 @@ export class RepoStore {
       return undefined;
     }
     return result.stdout.trim() || undefined;
+  }
+
+  /**
+   * Read every ref under `patterns`.
+   *
+   * Fields are NUL-separated rather than whitespace-separated so a commit
+   * subject can contain anything without corrupting the row.
+   */
+  private async rawRefs(dir: string, patterns: string[]): Promise<RefEntry[]> {
+    const result = await this.git.run(
+      ["for-each-ref", `--format=${REF_FORMAT}`, ...patterns],
+      { gitDir: dir, maxBytes: REF_MAX_BYTES },
+    );
+    if (result.code !== 0) {
+      throw new GitError(
+        "Failed to list refs.",
+        result.code,
+        this.redact(result.stderr).trim(),
+      );
+    }
+
+    const refs: RefEntry[] = [];
+    for (const line of result.stdout.split("\n")) {
+      const [refname, object, peeled, date, peeledDate, subject] = line.split("\u0000");
+      if (!refname || !object) {
+        continue;
+      }
+
+      const prefix = refname.startsWith("refs/heads/")
+        ? "refs/heads/"
+        : refname.startsWith("refs/tags/")
+          ? "refs/tags/"
+          : undefined;
+      if (!prefix) {
+        continue;
+      }
+
+      refs.push({
+        name: refname.slice(prefix.length),
+        refname,
+        kind: prefix === "refs/heads/" ? "branch" : "tag",
+        // An annotated tag's own object id is the tag object; the peeled id is
+        // the commit it ultimately points at.
+        commit: peeled || object,
+        date: peeledDate || date || undefined,
+        subject: subject || undefined,
+      });
+    }
+    return refs;
+  }
+
+  /** The repository's default branch, as recorded in the mirror's HEAD. */
+  private async defaultBranch(dir: string): Promise<string | undefined> {
+    const result = await this.git.run(["symbolic-ref", "--short", "HEAD"], {
+      gitDir: dir,
+      maxBytes: 4096,
+    });
+    if (result.code !== 0) {
+      return undefined;
+    }
+    return result.stdout.trim() || undefined;
+  }
+
+  /**
+   * Classify a ref that already resolved. A raw (possibly abbreviated) object
+   * id is never a named ref; branches are checked before tags, matching git's
+   * own precedence when a branch and a tag share a name.
+   */
+  private async namedRef(
+    dir: string,
+    ref: string,
+  ): Promise<{ refname: string; kind: "branch" | "tag" } | undefined> {
+    if (/^[0-9a-f]{7,40}$/i.test(ref)) {
+      return undefined;
+    }
+    for (const [prefix, kind] of [
+      ["refs/heads/", "branch"],
+      ["refs/tags/", "tag"],
+    ] as const) {
+      const refname = `${prefix}${ref}`;
+      const result = await this.git.run(["show-ref", "--verify", "--quiet", refname], {
+        gitDir: dir,
+        maxBytes: 1024,
+      });
+      if (result.code === 0) {
+        return { refname, kind };
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Build the "not found" message for a ref, adding close matches when we can
+   * work them out. Suggestions are a nicety: if listing refs fails for any
+   * reason the plain message is still the right answer.
+   */
+  private async notFoundRefMessage(project: string, ref: string): Promise<string> {
+    const suggestions = await this.suggestRefs(project, ref).catch(() => [] as RefEntry[]);
+    return formatRefNotFound(project, ref, suggestions);
   }
 
   /**

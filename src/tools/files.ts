@@ -1,16 +1,11 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Config } from "../config.js";
-import { GitError } from "../git.js";
-import { explainGitError } from "../gitDiagnostics.js";
 import { NotFoundError, type RepoStore } from "../repoStore.js";
+import { NO_PROJECT, errorResult, failureMessage, textResult } from "./result.js";
 
 const DEFAULT_MAX_BYTES = 200_000;
 const HARD_MAX_BYTES = 20_000_000;
-
-function errorResult(message: string) {
-  return { content: [{ type: "text" as const, text: message }], isError: true };
-}
 
 export function registerFileTools(server: McpServer, store: RepoStore, config: Config): void {
   server.registerTool(
@@ -48,9 +43,7 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
     async ({ ref, path: filePath, project, max_bytes }) => {
       const target = project?.trim() || config.defaultProject;
       if (!target) {
-        return errorResult(
-          "No project specified and GITLAB_DEFAULT_PROJECT is not set. Pass a `project` like 'group/subgroup/repo'.",
-        );
+        return errorResult(NO_PROJECT);
       }
 
       try {
@@ -78,20 +71,12 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
           ? `${result.content}\n</file>\n[truncated: content exceeded the ${limit} byte limit]`
           : `${result.content}\n</file>`;
 
-        return { content: [{ type: "text" as const, text: `<file ${attributes}>\n${body}` }] };
+        return textResult(`<file ${attributes}>\n${body}`);
       } catch (error) {
         if (error instanceof NotFoundError) {
           return errorResult(error.message);
         }
-        // A git failure carries git's own stderr, which is the difference
-        // between "clone failed" and "your token was rejected".
-        if (error instanceof GitError) {
-          return errorResult(
-            `Failed to read "${filePath}" at "${ref}".\n${explainGitError(error)}`,
-          );
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        return errorResult(`Failed to read "${filePath}" at "${ref}": ${message}`);
+        return errorResult(`Failed to read "${filePath}" at "${ref}".\n${failureMessage(error)}`);
       }
     },
   );
