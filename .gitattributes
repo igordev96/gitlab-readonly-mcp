@@ -1,0 +1,9 @@
+# Normalise line endings so Windows and Unix contributors see identical diffs.
+* text=auto
+
+*.ts    text eol=lf
+*.mjs   text eol=lf
+*.json  text eol=lf
+*.jsonc text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
