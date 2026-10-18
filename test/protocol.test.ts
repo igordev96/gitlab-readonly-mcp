@@ -83,6 +83,35 @@ describe("MCP protocol", () => {
     }
   });
 
+  it("exposes search and pickaxe", async () => {
+    const { tools } = await client.listTools();
+    const names = tools.map((tool) => tool.name);
+    for (const expected of ["search", "pickaxe"]) {
+      assert.ok(names.includes(expected), `${expected} is missing; saw ${names.join(", ")}`);
+    }
+  });
+
+  it("searches a tree at a ref, and follows a string through history", async () => {
+    const found = await client.callTool({
+      name: "search",
+      arguments: { project: "demo", ref: "fix/TEST-1", query: "export const" },
+    });
+    assert.equal(found.isError, undefined);
+    assert.match(
+      textOf(found),
+      /<search project="demo" ref="fix\/TEST-1" commit="[0-9a-f]{40}" query="export const" count="2" files="2"/,
+    );
+    assert.match(textOf(found), /src\/components\/Button\.tsx/);
+
+    const history = await client.callTool({
+      name: "pickaxe",
+      arguments: { project: "demo", ref: "fix/TEST-1", query: "Button" },
+    });
+    assert.equal(history.isError, undefined);
+    assert.match(textOf(history), /<pickaxe project="demo" ref="fix\/TEST-1"[^>]*count="1"/);
+    assert.match(textOf(history), /branch change/);
+  });
+
   it("reports a project once it has been used, and syncs it on demand", async () => {
     await client.callTool({
       name: "get_file",

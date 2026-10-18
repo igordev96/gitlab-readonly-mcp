@@ -11,6 +11,16 @@ export const DEFAULT_FILE_MAX_BYTES = 200_000;
 export const DEFAULT_MAX_ENTRIES = 200;
 /** Absolute cap on a listing, so one call can never dump an unbounded result. */
 export const HARD_MAX_ENTRIES = 5_000;
+/** Default number of matches a search returns. */
+export const DEFAULT_MAX_MATCHES = 100;
+/** Absolute cap on a search, so one call can never dump an unbounded result. */
+export const HARD_MAX_MATCHES = 2_000;
+/** Default number of commits `pickaxe` returns. */
+export const DEFAULT_PICKAXE_LIMIT = 20;
+/** Byte cap for search output; the match cap usually bites first. */
+const SEARCH_MAX_BYTES = 5 * 1024 * 1024;
+/** Cap on the search text itself, so a pathological pattern cannot get through. */
+const MAX_QUERY_CHARS = 500;
 
 /**
  * `for-each-ref` output format for one ref, NUL-separated so commit subjects
@@ -23,6 +33,8 @@ const REF_FORMAT =
 const REF_MAX_BYTES = 4 * 1024 * 1024;
 /** Byte cap for a tree listing; the entry cap usually bites first. */
 const TREE_MAX_BYTES = 8 * 1024 * 1024;
+/** One `git log` row for `pickaxe`: short sha, date, author, subject. */
+const PICKAXE_FORMAT = "%h%x09%ad%x09%an%x09%s";
 
 /** Thrown when a ref or file path does not exist (as opposed to a hard failure). */
 export class NotFoundError extends Error {
@@ -126,6 +138,93 @@ export interface RefListResult {
   /** When the source backing this listing was last synchronised, if known. */
   syncedAt?: Date;
   /** True when this listing triggered a fetch. */
+  fetched: boolean;
+  /** Set when the freshness check failed and this answer came from the cache. */
+  refreshError?: string;
+}
+
+/** How a search should be run. */
+export interface SearchOptions {
+  /** The ref to search. Omitted means the source's HEAD — its default branch. */
+  ref?: string;
+  /** A git pathspec, so globs work. Absent searches the whole tree. */
+  path?: string;
+  /** Default false: search ignores case unless this is set. */
+  caseSensitive?: boolean;
+  /** Treat the query as POSIX extended regex (`-E`) rather than a literal (`-F`). */
+  regex?: boolean;
+  maxMatches?: number;
+}
+
+/** One matching line, with the file it is in. */
+export interface SearchMatch {
+  path: string;
+  /** 1-based line number. */
+  line: number;
+  /** The matched line, verbatim. Long lines are cut by the renderer, not here. */
+  text: string;
+}
+
+export interface SearchResult {
+  project: string;
+  /** The ref that was searched: the one asked for, or the source's HEAD. */
+  ref: string;
+  /** The commit the ref resolved to; the search ran against this, not the name. */
+  commit: string;
+  query: string;
+  /** Whether the query was a regular expression. */
+  regex: boolean;
+  caseSensitive: boolean;
+  path?: string;
+  matches: SearchMatch[];
+  /** Matches found, which is the true number unless the output was cut. */
+  total: number;
+  /**
+   * Distinct files among *all* the matches found, not just the ones returned.
+   * Counting only the returned slice would report `682 matches in 3 files`, which
+   * reads as a fact about the repository and is not one.
+   */
+  files: number;
+  /** True when `maxMatches` hid matches, or the byte cap cut the output. */
+  truncated: boolean;
+  /** True only for the byte cap: `total` and `files` are then lower bounds. */
+  outputTruncated: boolean;
+  syncedAt?: Date;
+  fetched: boolean;
+  /** Set when the freshness check failed and this answer came from the cache. */
+  refreshError?: string;
+}
+
+/** How a pickaxe should be run. */
+export interface PickaxeOptions {
+  /** The ref whose history to walk. Omitted means the source's HEAD. */
+  ref?: string;
+  /** A git pathspec, so globs work. Absent considers the whole tree. */
+  path?: string;
+  /** Default false: follow the text whatever its case, as `search` does. */
+  caseSensitive?: boolean;
+  limit?: number;
+}
+
+/** One commit that changed how often the text appears. */
+export interface PickaxeEntry {
+  commit: string;
+  /** Commit date, `YYYY-MM-DD`. */
+  date?: string;
+  author?: string;
+  subject?: string;
+}
+
+export interface PickaxeResult {
+  project: string;
+  ref: string;
+  commit: string;
+  query: string;
+  caseSensitive: boolean;
+  path?: string;
+  entries: PickaxeEntry[];
+  truncated: boolean;
+  syncedAt?: Date;
   fetched: boolean;
   /** Set when the freshness check failed and this answer came from the cache. */
   refreshError?: string;
@@ -245,6 +344,98 @@ export function validateRepoPath(filePath: string): string {
     throw new Error("path contains illegal characters.");
   }
   return value.replace(/^\/+/, "");
+}
+
+/**
+ * Guard the search text. It is passed to git as a single argument, so only NUL
+ * and newlines are outright illegal; the length cap exists so a single call
+ * cannot hand git a pattern that takes minutes to fail on.
+ */
+export function validateQuery(query: string): string {
+  if (!query.trim()) {
+    throw new Error("query must not be empty.");
+  }
+  if (query.length > MAX_QUERY_CHARS) {
+    throw new Error(`query must be at most ${MAX_QUERY_CHARS} characters.`);
+  }
+  if (/[\u0000\n\r]/.test(query)) {
+    throw new Error("query contains illegal characters.");
+  }
+  return query;
+}
+
+/**
+ * Parse `git grep --line-number -z` output.
+ *
+ * `-z` separates the fields with NUL but still terminates each record with a
+ * newline, so a token after the first two holds one match's text *and* the next
+ * match's path, joined by that newline:
+ *
+ *   `rev:path \0 line \0 text \n rev:path \0 line \0 text \n`
+ *
+ * The text is one line by definition, so the *first* newline in the token is
+ * always the join — even when a path contains one, which is the case `-z` exists
+ * for. The `rev:` prefix is stripped by exact match on the revision we passed,
+ * so a path containing a colon survives. A record torn by the byte cap is
+ * dropped rather than guessed at.
+ */
+export function parseGrepMatches(output: string, rev: string): SearchMatch[] {
+  const prefix = `${rev}:`;
+  const tokens = output.split("\u0000");
+  const matches: SearchMatch[] = [];
+
+  let head = tokens[0];
+  for (let index = 1; index + 1 < tokens.length; index += 2) {
+    const line = Number.parseInt(tokens[index] ?? "", 10);
+    let text = tokens[index + 1] ?? "";
+    const join = text.indexOf("\n");
+    const next = join === -1 ? undefined : text.slice(join + 1);
+    if (join !== -1) {
+      text = text.slice(0, join);
+    }
+
+    if (head?.startsWith(prefix) && Number.isInteger(line)) {
+      matches.push({
+        path: head.slice(prefix.length),
+        line,
+        text: text.replace(/\r$/, ""),
+      });
+    }
+
+    // No join means this was the last record; anything past it is a torn tail.
+    if (next === undefined) {
+      break;
+    }
+    head = next;
+  }
+
+  return matches;
+}
+
+/**
+ * Parse `git log --format=<short sha>%x09<date>%x09<author>%x09<subject>`.
+ * A subject may itself contain tabs, so everything after the third field is the
+ * subject again rather than a fourth field.
+ */
+export function parsePickaxeEntries(output: string): PickaxeEntry[] {
+  const entries: PickaxeEntry[] = [];
+  for (const line of output.split("\n")) {
+    if (!line) {
+      continue;
+    }
+    const fields = line.split("\t");
+    const commit = fields[0] ?? "";
+    if (!commit) {
+      continue;
+    }
+    entries.push({
+      commit,
+      date: fields[1] || undefined,
+      author: fields[2] || undefined,
+      subject: fields.length > 3 ? fields.slice(3).join("\t") : undefined,
+    });
+  }
+  return entries;
 }
 
 /**
@@ -872,17 +1063,207 @@ export class RepoStore {
     };
   }
 
+  /**
+   * Search the tree of one ref: `git grep`.
+   *
+   * The ref is resolved first, with the same freshness rules as a read — and
+   * therefore with fetch-on-miss, which a listing cannot use — and the search
+   * runs against the resolved commit rather than the name. That is what makes a
+   * branch that exists only as a remote-tracking ref work, and what lets the
+   * result carry the same `commit`/`syncedAt` provenance as `get_file`.
+   *
+   * Matching is literal and case-insensitive unless asked otherwise: git's
+   * default dialect is BRE, where `|` and `+` are ordinary characters, so a
+   * caller's `foo|bar` would quietly match the literal text instead.
+   */
+  async search(project: string, query: string, options: SearchOptions = {}): Promise<SearchResult> {
+    const cleanProject = validateProject(project);
+    const cleanQuery = validateQuery(query);
+    const cleanPath = options.path === undefined ? undefined : validateRepoPath(options.path);
+
+    const source = await this.resolveSource(cleanProject);
+    const target = await this.targetRef(source, options.ref);
+    const { commit, fetched, refreshError, skipped } = await this.resolveWithFreshness(
+      cleanProject,
+      target.resolve,
+      source,
+    );
+    if (!commit) {
+      throw new NotFoundError(
+        await this.notFoundRefMessage(cleanProject, target.display, {
+          refreshError,
+          skipped,
+          sourceKind: source.kind,
+        }),
+      );
+    }
+
+    const args = ["grep", "--line-number", "-z", "-I", "--no-color"];
+    args.push(options.regex ? "-E" : "-F");
+    if (!options.caseSensitive) {
+      args.push("-i");
+    }
+    // `-e` keeps a pattern that starts with `-` from being read as an option.
+    args.push("-e", cleanQuery, commit);
+    if (cleanPath) {
+      args.push("--", cleanPath);
+    }
+
+    const found = await this.git.run(args, { gitDir: source.gitDir, maxBytes: SEARCH_MAX_BYTES });
+    // Exit 1 is `git grep`'s "nothing matched": an answer, not a failure.
+    if (found.code !== 0 && found.code !== 1) {
+      throw new GitError(
+        `Failed to search "${cleanQuery}" at "${target.display}".`,
+        found.code,
+        this.redact(found.stderr).trim(),
+      );
+    }
+
+    const parsed = parseGrepMatches(found.stdout, commit);
+    const limit = Math.min(options.maxMatches ?? DEFAULT_MAX_MATCHES, HARD_MAX_MATCHES);
+    const syncMs = await this.sources.lastSyncAt(source.gitDir);
+
+    return {
+      project: cleanProject,
+      ref: target.display,
+      commit,
+      query: cleanQuery,
+      regex: options.regex ?? false,
+      caseSensitive: options.caseSensitive ?? false,
+      path: cleanPath,
+      matches: parsed.length > limit ? parsed.slice(0, limit) : parsed,
+      total: parsed.length,
+      files: new Set(parsed.map((match) => match.path)).size,
+      truncated: parsed.length > limit || found.truncated,
+      outputTruncated: found.truncated,
+      syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
+      fetched,
+      refreshError,
+    };
+  }
+
+  /**
+   * Commits whose diff changed how many times `query` appears: `git log -S`.
+   *
+   * This answers a different question from `search` — not "where is this now"
+   * but "when did it appear or go away" — and it walks history to answer it, so
+   * it is the slower of the two.
+   *
+   * Like `search`, it ignores case unless asked not to: a pickaxe that is
+   * silently case-sensitive answers "no commit ever changed this" about text the
+   * caller is looking straight at.
+   */
+  async pickaxe(
+    project: string,
+    query: string,
+    options: PickaxeOptions = {},
+  ): Promise<PickaxeResult> {
+    const cleanProject = validateProject(project);
+    const cleanQuery = validateQuery(query);
+    const cleanPath = options.path === undefined ? undefined : validateRepoPath(options.path);
+
+    const source = await this.resolveSource(cleanProject);
+    const target = await this.targetRef(source, options.ref);
+    const { commit, fetched, refreshError, skipped } = await this.resolveWithFreshness(
+      cleanProject,
+      target.resolve,
+      source,
+    );
+    if (!commit) {
+      throw new NotFoundError(
+        await this.notFoundRefMessage(cleanProject, target.display, {
+          refreshError,
+          skipped,
+          sourceKind: source.kind,
+        }),
+      );
+    }
+
+    const limit = Math.min(options.limit ?? DEFAULT_PICKAXE_LIMIT, HARD_MAX_MATCHES);
+    const args = [
+      "log",
+      `--format=${PICKAXE_FORMAT}`,
+      "--date=short",
+      // One more than asked, so "there are more" is a fact rather than a guess.
+      `--max-count=${limit + 1}`,
+      // Joined to `-S`, so a query starting with `-` cannot be read as an option.
+      `-S${cleanQuery}`,
+      commit,
+    ];
+    if (!options.caseSensitive) {
+      // Verified with git 2.53: `-i` really does apply to `-S`.
+      args.push("-i");
+    }
+    if (cleanPath) {
+      args.push("--", cleanPath);
+    }
+
+    const found = await this.git.run(args, { gitDir: source.gitDir, maxBytes: SEARCH_MAX_BYTES });
+    if (found.code !== 0) {
+      throw new GitError(
+        `Failed to search history for "${cleanQuery}".`,
+        found.code,
+        this.redact(found.stderr).trim(),
+      );
+    }
+
+    const entries = parsePickaxeEntries(found.stdout);
+    const syncMs = await this.sources.lastSyncAt(source.gitDir);
+
+    return {
+      project: cleanProject,
+      ref: target.display,
+      commit,
+      query: cleanQuery,
+      caseSensitive: options.caseSensitive ?? false,
+      path: cleanPath,
+      entries: entries.length > limit ? entries.slice(0, limit) : entries,
+      truncated: entries.length > limit || found.truncated,
+      syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
+      fetched,
+      refreshError,
+    };
+  }
+
   // --- internals -----------------------------------------------------------
+
+  /**
+   * The ref a read should act on: the one asked for, or the source's HEAD — the
+   * mirror's default branch, or a clone's checked-out branch.
+   *
+   * The display name is the resolved one, so an answer says `develop` rather
+   * than `HEAD`, while the name handed to git stays `HEAD` in that case, which
+   * is what makes a detached repository work at all.
+   */
+  private async targetRef(
+    source: GitSource,
+    ref: string | undefined,
+  ): Promise<{ resolve: string; display: string }> {
+    const asked = ref?.trim() ? validateRef(ref) : undefined;
+    if (asked) {
+      return { resolve: asked, display: asked };
+    }
+
+    const head = await this.defaultBranch(source.gitDir);
+    return { resolve: "HEAD", display: head ?? "HEAD" };
+  }
 
   /**
    * Ensure the source is fresh enough, then resolve the ref. If the ref is not
    * found and we did not just fetch, fetch once more and retry — this is what
    * makes a branch created moments ago appear without a manual sync.
+   *
+   * `knownSource` lets a caller that already resolved the source (to ask it for
+   * its HEAD, say) avoid resolving it twice.
    */
-  private async resolveWithFreshness(project: string, ref: string): Promise<ResolvedRef> {
+  private async resolveWithFreshness(
+    project: string,
+    ref: string,
+    knownSource?: GitSource,
+  ): Promise<ResolvedRef> {
     const cleanProject = validateProject(project);
     const cleanRef = validateRef(ref);
-    const source = await this.resolveSource(cleanProject);
+    const source = knownSource ?? (await this.resolveSource(cleanProject));
 
     const first = await this.refresh(cleanProject, source, "ttl");
     let commit = await this.revParse(source, cleanRef);

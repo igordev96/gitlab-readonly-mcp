@@ -17,7 +17,8 @@ where it is read from: a mirror the server keeps fresh, or a clone of your own,
 which is read, never cloned, and fetched only when a ref is missing from it. Its
 policy (`repos.json`) can include `manual`, which makes no network call that
 `sync_repo` did not ask for, while its age always comes from the source's own
-sync stamp and never from the registry. The token is supplied by OpenCode's
+sync stamp and never from the registry. Search (`git grep`) and pickaxe
+(`git log -S`) are next, in 4a (§4). The token is supplied by OpenCode's
 config (`~/.config/opencode/opencode.jsonc`), not by the shell. See `history.md`.
 Owner: igordev96
 Author: OpenCode
@@ -289,9 +290,63 @@ Tool names are exposed by OpenCode as `gitlab_<tool>`.
 - `get_commit(project, sha)`.
 - `blame(project, path, ref, lines?)`.
 
-**Search (free bonus)**
-- `search(project, query, ref, glob?)` — `git grep`.
-- `pickaxe(project, string, path?)` — `git log -S` ("when was this introduced?").
+**Search**
+- `search(project, query, ref?, path?, case_sensitive?, regex?, max_matches?)` —
+  `git grep` over the tree of one ref, matches grouped by file as
+  `path:line: text`, with the same `commit` / `synced_at` provenance as
+  `get_file`. (4a)
+- `pickaxe(project, query, ref?, path?, limit?)` — `git log -S`: "when was this
+  text introduced or removed?", one commit per line. (4a)
+
+`search` design decisions (mechanics verified with git 2.53, 2026-10-18):
+
+- **Grep a SHA, not a ref name.** `git grep <pattern> <rev>` prefixes every match
+  with `<rev>:`; when the argument is the SHA we just resolved that prefix is
+  exactly known, so it can be stripped rather than guessed — a path may contain a
+  colon, and in a clone the ref may be `refs/remotes/origin/…`. It also means a
+  ref that exists only as a remote-tracking ref works, and the answer carries the
+  same `commit`/`synced_at` provenance as `get_file`.
+- **Parse with `-z`, group in threes.** With `-z` git writes
+  `ref:path\0line\0text` + newline per match; splitting the raw output on NUL and
+  grouping in threes survives a path containing a newline, which splitting on
+  lines would not. A torn tail — the stdout byte cap can cut mid-record — is
+  dropped.
+- **Exit codes are part of the contract.** `git grep` exits 1 when nothing
+  matched: an empty answer, not an error. It exits 128 for an unresolvable
+  revision, which cannot happen here because the ref is resolved first and a miss
+  is reported with close matches. This is why `search` *can* use fetch-on-miss
+  where `list_refs` cannot: it resolves one ref rather than listing all of them.
+- **Literal by default** (`-F`). The default git dialect is BRE, where `+`, `?`
+  and `|` are literal, so an agent writing `foo|bar` would silently get a literal
+  match. `regex: true` opts into `-E` — POSIX ERE, not PCRE — and the description
+  says so.
+- **Case-insensitive by default**, consistent with `list_refs`' `search`: a
+  silent miss costs more than a visible extra match. `case_sensitive: true`
+  reverses it.
+- `-I` skips binary files, `--no-color` is explicit, and the pattern goes through
+  `-e <pattern>` so one starting with `-` cannot be read as an option. The
+  optional `path` is a git pathspec, passed through as git defines it, so it is
+  worth knowing what that means: `src/components/*.tsx` matches, and a plain
+  pathspec's `**` requires at least one directory level — `:(glob)src/**/*.tsx`
+  is what makes it match zero or more. Both behaviours are pinned by tests, and
+  the description says so, rather than the tool inventing a dialect of its own.
+- **Caps:** `max_matches` (default 100) with the true total when it is known, and
+  the wrapper's own 5 MB stdout cap, which sets `truncated`. Each rendered match
+  line is cut at 300 characters and says how much was cut, because one minified
+  line can otherwise be a megabyte.
+- Display grouping is done in TypeScript rather than with `--heading`: adding
+  `-p` changes that format's separator from `:` to `=`, so the format stays ours.
+
+`pickaxe` walks history, so it is slower than `search` and says so in its
+description. `limit` (default 20) is passed as `--max-count` one higher than
+asked, so "there are more" is a fact rather than a guess, and rows are
+`short sha`, `date`, `author`, subject. It is literal (`-S`) in 4a: `-G` — regex
+over the patch — answers a different question ("which commits changed a matching
+line"), and hiding that difference behind one flag would be a trap. `-S` is
+case-sensitive by itself and `-i` does apply to it (verified with git 2.53), so
+`pickaxe` runs case-insensitively like `search` unless `case_sensitive` is set:
+the live check found the case-sensitive default answering "no commit ever
+changed this" about text plainly present on the branch.
 
 **Ergonomics**
 - `parse_gitlab_url(url)` → `{project, ref, path}` from
@@ -363,11 +418,12 @@ truncation flag when output is capped.
 | 2c-1 | Registry: `list_repos`, `sync_repo`, per-project policy, `manual` mode | The registry reports every project in use and its true age; a `manual` project is refreshed only by `sync_repo` |
 | 2c-2 | Local clones: `add_repo`, `remove_repo`, mirror+local resolution | A registered clone answers reads with no mirror created for it, fetches only what it lacks, and nothing falls back silently |
 | 3 | Diff & history: `compare`, `diff_file`, `log`, `get_commit`, `blame` | "What changed between `develop` and `fix/PROJ-7608`?" works |
-| 4 | Polish: `search`, `pickaxe`, URL parser, truncation, caching, stale-visibility | Freshness provenance visible on every read |
+| 4a | Search: `search` (`git grep`) and `pickaxe` (`git log -S`) | "Where is this used on `fix/PROJ-7608`, and when did it appear?" answered without a clone |
+| 4b | Polish: `parse_gitlab_url`, function context for `search`, `files`/`count` output modes, blobless clones, truncation and stale-visibility review | Every read states its provenance; a GitLab file URL can be handed straight to `get_file` |
 
-> **Status:** phases 0–2c-2 complete; 2b-1 is `v0.3.0`, 2b-2 `v0.4.0`, the
-> freshness hardening `v0.5.x`, 2c-1 `v0.6.0`, and 2c-2 is `v0.7.0`. Next are 3
-> (diff and history) and 4. Per-phase detail: [`history.md`](history.md).
+> **Status:** phases 0, 1, 2a, 2b, 2c-1 and 2c-2 complete; 2c-2 is `v0.7.0`.
+> 4a (search) comes next, ahead of phase 3, because the search tools are wanted
+> first. Per-phase detail: [`history.md`](history.md).
 
 ### Source layout
 
@@ -387,7 +443,7 @@ src/
     files.ts       # get_file, list_tree                            ✅ Phase 2b-2
     refs.ts        # list_refs, resolve_ref                        ✅ Phase 2b-1
     repos.ts       # list_repos, sync_repo, add_repo, remove_repo   ✅ Phase 2c-1/2c-2
-    history.ts  search.ts                                          (later phases)
+    history.ts  search.ts  pickaxe.ts                             (4a, 3)
 test/
   fixture.ts     # builds a throwaway "GitLab" (working repo + bare server)
   store.test.ts  # source resolution, guards, freshness, project policy
