@@ -39,6 +39,27 @@ changed and ask before starting the next. Do not chain unrelated changes.
   the newest tag. `npm version <minor|patch>` bumps both in one step. That
   command commits and tags, so it still needs approval first.
 
+## Verifying a phase
+
+Fixtures catch what they can test; the live server catches the rest. Every phase
+so far has found something the fixture could not, so end each phase with a manual
+check against the real project, and make it a real check rather than a nice note:
+
+1. **Say what to restart first.** The running MCP server keeps the code and the
+   token it started with, so `opencode service restart` is required before a new
+   tool or config is visible. The assistant's own tool list is a live probe of
+   the running server — if a new tool is absent there, the restart has not
+   happened.
+2. **Give the exact calls**, with the real project path and ref, copy-pasteable,
+   and state what success looks like *and* what failure looks like. A check that
+   only confirms the happy path is a demo, not a test.
+3. **Run them when the tools allow it, and report the real output** rather than
+   describing what it would probably say. Prefer this to handing over a script.
+4. **Record the outcome** in `docs/history.md`: the Milestones `verified live`
+   column, and a findings row for anything learned. A phase whose live check has
+   not happened is marked unverified — never ticked on the strength of a passing
+   fixture.
+
 ## Reporting
 
 When a step is done, state: what changed, what you verified, what you did **not**
