@@ -8,7 +8,14 @@ import {
   type RepoStore,
   type TreeListResult,
 } from "../repoStore.js";
-import { NO_PROJECT, errorResult, failureMessage, refreshFailedNote, textResult } from "./result.js";
+import {
+  NO_PROJECT,
+  SYNCED_AT_UNKNOWN,
+  errorResult,
+  failureMessage,
+  refreshFailedNote,
+  textResult,
+} from "./result.js";
 
 const DEFAULT_MAX_BYTES = 200_000;
 const HARD_MAX_BYTES = 20_000_000;
@@ -23,7 +30,7 @@ export function formatTree(result: TreeListResult): string {
     result.recursive ? 'recursive="true"' : undefined,
     `count="${result.entries.length}"`,
     result.total !== result.entries.length ? `total="${result.total}"` : undefined,
-    result.syncedAt ? `synced_at="${result.syncedAt.toISOString()}"` : undefined,
+    result.syncedAt ? `synced_at="${result.syncedAt.toISOString()}"` : SYNCED_AT_UNKNOWN,
     result.refreshError ? 'refresh_failed="true"' : undefined,
     result.truncated ? 'truncated="true"' : undefined,
   ]
@@ -98,7 +105,7 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
           `ref="${result.ref}"`,
           `commit="${result.commit}"`,
           `path="${result.path}"`,
-          result.syncedAt ? `synced_at="${result.syncedAt.toISOString()}"` : undefined,
+          result.syncedAt ? `synced_at="${result.syncedAt.toISOString()}"` : SYNCED_AT_UNKNOWN,
           result.refreshError ? 'refresh_failed="true"' : undefined,
           result.truncated ? 'truncated="true"' : undefined,
         ]

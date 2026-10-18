@@ -274,6 +274,11 @@ describe("MCP protocol when the mirror cannot be refreshed", () => {
     assert.match(text, /export const hello/, "the cached file still answers");
     assert.match(text, /refresh_failed="true"/);
     assert.match(text, /\[refresh failed: /);
+    assert.match(
+      text,
+      /git said: /,
+      "the note must give the agent the diagnostic, not only the fact of failure",
+    );
   });
 
   it("lists refs from the cache and says the refresh failed", async () => {

@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { Config } from "./config.js";
 import { Git, GitError, type GitRunResult } from "./git.js";
+import { explainGitError } from "./gitDiagnostics.js";
 
 const PROJECT_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 export const DEFAULT_FILE_MAX_BYTES = 200_000;
@@ -336,8 +337,17 @@ export function parseTreeEntries(output: string): TreeEntry[] {
   return `${base} Did you mean:\n${lines.join("\n")}`;
 }
 
-/** The message of a thrown value, for reporting without a stack. */
+/**
+ * The text of a thrown value, for reporting without a stack.
+ *
+ * A git failure is composed exactly as a hard failure would be, so a degraded
+ * read carries the same diagnosis — which is the part that says whether this was
+ * a token, a VPN, or a private CA — and not just the fact that it failed.
+ */
 function describeError(error: unknown): string {
+  if (error instanceof GitError) {
+    return explainGitError(error);
+  }
   return error instanceof Error ? error.message : String(error);
 }
 

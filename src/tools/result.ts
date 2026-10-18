@@ -20,6 +20,13 @@ export const NO_PROJECT =
   "No project specified and GITLAB_DEFAULT_PROJECT is not set. Pass a `project` like 'group/subgroup/repo'.";
 
 /**
+ * Rendered in place of a timestamp when the mirror's age is genuinely unknown:
+ * no successful fetch has stamped it yet. Saying so beats saying nothing, since
+ * an absent field reads as no news rather than as a missing measurement.
+ */
+export const SYNCED_AT_UNKNOWN = 'synced_at="unknown"';
+
+/**
  * Footnote for a tool that answered from the cached mirror because refreshing it
  * failed. The answer is still real — just as old as `synced_at` says — so this
  * reports the reason instead of quietly presenting the read as a fresh one.

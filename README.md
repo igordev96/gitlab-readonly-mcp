@@ -176,11 +176,14 @@ from a fresh sync.
 
 **A refresh that fails does not fail the read.** When the mirror cannot be
 reached, or the token is rejected, the cached mirror answers and the result says
-so: `refresh_failed="true"` in the header and a `[refresh failed: …]` note giving
-the reason, beside a `synced_at` that still names the last *successful* sync. The
-one thing it will not do is present cached data as fresh. A ref that is missing
-*and* was looked for through a failed refresh says so as well, because then a
-missing ref is not evidence that it does not exist.
+so: `refresh_failed="true"` in the header and a `[refresh failed: …]` note
+carrying the same diagnosis a failed read gives — the hint, and git's own words.
+Beside it, `synced_at` names the last *successful* sync, or reads
+`synced_at="unknown"` when no fetch has ever stamped that mirror, so an age that
+was never measured is stated rather than left blank. The one thing it will not do
+is present cached data as fresh. A ref that is missing *and* was looked for
+through a failed refresh says so as well, because then a missing ref is not
+evidence that it does not exist.
 
 ## Troubleshooting
 

@@ -226,6 +226,16 @@ describe("a refresh that fails", () => {
     assert.match(result.content, /export const hello/, "the cached copy still answers");
     assert.equal(result.fetched, false, "nothing was fetched");
     assert.match(result.refreshError ?? "", /Failed to fetch/, "the failure is reported");
+    assert.match(
+      result.refreshError ?? "",
+      /\ngit said: /,
+      "the note must carry git's own words, not just the fact that it failed",
+    );
+    assert.match(
+      result.refreshError ?? "",
+      /GitLab could not find this project/,
+      "the note must be diagnosed the same way a hard failure is",
+    );
     assert.equal(result.syncedAt?.getTime(), t0, "syncedAt still names the last real sync");
   });
 

@@ -8,12 +8,13 @@
 > runbook — lives in [`history.md`](history.md). Keep the two apart: this file
 > should not grow as phases land.
 
-Status: phases 0, 1, 2a and 2b complete; newest tag `v0.5.0` (freshness
+Status: phases 0, 1, 2a and 2b complete; newest tag `v0.5.1` (freshness
 hardening). All four read tools are implemented and have been exercised against
-the real GitLab. The two faults that live check found are fixed: a rejected fetch
-can no longer advance the sync clock, and a refresh that fails answers from the
-cache and says so. The token that the live check saw rejected is still open. See
-`history.md`.
+the real GitLab. A rejected fetch can no longer advance the sync clock, and a
+refresh that fails answers from the cache and says why — verified live on the
+degraded path, including the two defects that check found. The token the check
+saw rejected is still open, and the success path (a fetch that writes the stamp)
+is unverified until it works. See `history.md`.
 Owner: igordev96
 Author: OpenCode
 

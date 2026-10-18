@@ -283,4 +283,23 @@ describe("formatTree", () => {
 
     assert.doesNotMatch(text, /refresh/);
   });
+
+  it("says the age is unknown when no successful fetch has stamped the mirror", () => {
+    const text = formatTree({
+      project: "demo",
+      ref: "main",
+      commit: "a".repeat(40),
+      path: "",
+      recursive: false,
+      entries: [],
+      total: 0,
+      truncated: false,
+      fetched: false,
+      refreshError: "Failed to fetch demo.",
+    });
+
+    // Silence would read as "nothing to report"; an unmeasured age is a fact.
+    assert.match(text, /synced_at="unknown"/);
+    assert.doesNotMatch(text, /synced_at="\d/);
+  });
 });

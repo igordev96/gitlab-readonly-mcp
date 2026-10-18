@@ -10,6 +10,7 @@ import {
 } from "../repoStore.js";
 import {
   NO_PROJECT,
+  SYNCED_AT_UNKNOWN,
   errorResult,
   failureMessage,
   refreshFailedNote,
@@ -28,7 +29,7 @@ export function formatRefList(result: RefListResult): string {
     result.defaultBranch ? `default_branch="${result.defaultBranch}"` : undefined,
     `count="${result.refs.length}"`,
     result.total !== result.refs.length ? `total="${result.total}"` : undefined,
-    result.syncedAt ? `synced_at="${result.syncedAt.toISOString()}"` : undefined,
+    result.syncedAt ? `synced_at="${result.syncedAt.toISOString()}"` : SYNCED_AT_UNKNOWN,
     result.refreshError ? 'refresh_failed="true"' : undefined,
     result.truncated ? 'truncated="true"' : undefined,
   ]
@@ -69,7 +70,7 @@ export function formatResolvedRef(
     `kind="${kind}"`,
     refname ? `refname="${refname}"` : undefined,
     `commit="${commit}"`,
-    syncedAt ? `synced_at="${syncedAt.toISOString()}"` : undefined,
+    syncedAt ? `synced_at="${syncedAt.toISOString()}"` : SYNCED_AT_UNKNOWN,
     refreshError ? 'refresh_failed="true"' : undefined,
   ]
     .filter((value): value is string => value !== undefined)
