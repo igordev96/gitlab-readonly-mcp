@@ -8,7 +8,8 @@ tree. Content is read from local bare mirrors that the server keeps in a cache
 directory.
 
 > Phase 1 implementation. Currently exposes a single tool: `get_file`.
-> See the plan at `C:\Users\example\.opencode\plan\gitlab-mcp-plan.md`.
+> See the plan at [`docs/plan.md`](docs/plan.md) — the canonical, in-repo design
+> document.
 
 ## Why git instead of the GitLab REST API?
 

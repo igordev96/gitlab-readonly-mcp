@@ -1,8 +1,11 @@
 # GitLab Read-Only MCP Server (git-backed) — Plan
 
-Status: **Phase 0 complete — plumbing verified. Ready for Phase 1 (build).**
-Owner: (you)
-Author: OpenCode (Plan mode)
+> **This file is the canonical plan.** It lives in the repository at `docs/plan.md`
+> and is version-controlled alongside the code. Edit it here.
+
+Status: **Phase 1 complete and verified live. Ready for Phase 2.**
+Owner: igordev96
+Author: OpenCode
 
 ---
 
@@ -231,9 +234,10 @@ truncation flag when output is capped.
 | 3 | Diff & history: `compare`, `diff_file`, `log`, `get_commit`, `blame` | "What changed between `develop` and `fix/PROJ-7608`?" works |
 | 4 | Polish: `search`, `pickaxe`, URL parser, truncation, caching, stale-visibility | Freshness provenance visible on every read |
 
-> **Status:** Phase 0 ✅ verified. Phase 1 ✅ implemented and locally tested
-> (14/14); pending live verification with a real token (see below). Phases 2–4
-> not started.
+> **Status:** Phase 0 ✅ verified. Phase 1 ✅ implemented, locally tested
+> (14/14) and **verified live** — the agent read `src/index.tsx` from
+> `fix/PROJ-7608` (commit `8297d0d`) through OpenCode. Tagged `v0.1.0`.
+> Phases 2–4 not started.
 
 ### Proposed source layout (Phase 1+)
 
@@ -452,6 +456,10 @@ Running record of things learned during Phase 0. Keep appending.
 | 2026-10-18 | Local validation: 14/14 smoke tests pass (store layer + MCP protocol over in-memory transport), incl. injection guard, missing ref/path, truncation, binary guard. `scripts/smoke.mjs`. | No network/token needed; run with `npm run smoke`. |
 | 2026-10-18 | `opencode mcp list` → `✗ gitlab failed: Connection closed ... GITLAB_TOKEN is required`. | Expected: env var not persisted. User must set a User-level `GITLAB_TOKEN` and restart the service. |
 | 2026-10-18 | Token was only set in the earlier shell session, never persisted. | Persist via `[Environment]::SetEnvironmentVariable('GITLAB_TOKEN','<token>','User')` then `opencode service restart`. |
+| 2026-10-18 | **Phase 1 verified live.** `gitlab.get_file` returned the real contents of `src/index.tsx` from `fix/PROJ-7608` (resolved commit `8297d0d`) through OpenCode. | Phase 1 exit criterion met; tagged `v0.1.0`. |
+| 2026-10-18 | `{env:NAME}` is a *literal* lookup, not a fallback. A token pasted inside it (`"{env:glpat-…}"`) makes OpenCode look for an env var literally *named* `glpat-…`, so nothing resolves and the server exits with `GITLAB_TOKEN is required`. | Never put a secret value inside `{env:...}`. Also watch for a duplicate `GITLAB_TOKEN` key in the config. |
+| 2026-10-18 | The PAT was briefly exposed in cleartext (global config, Windows registry, session transcript). | **Rotated.** Config reads `{env:GITLAB_TOKEN}`; prefer a Project Access Token with an expiry for ongoing use. |
+| 2026-10-18 | Plan moved into the repository and made canonical at `docs/plan.md`. | Future plan edits happen in-repo; the out-of-tree copy becomes a pointer stub. |
 
 ### Phase 1 artifacts
 
