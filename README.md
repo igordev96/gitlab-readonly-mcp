@@ -10,7 +10,8 @@ directory.
 > Phase 2b implementation. Exposes `get_file`, `list_refs`, and `resolve_ref`,
 > backed by local bare mirrors that keep themselves fresh (TTL + fetch-on-miss).
 > See the plan at [`docs/plan.md`](docs/plan.md) — the canonical, in-repo design
-> document.
+> document — and [`docs/history.md`](docs/history.md) for milestones, findings
+> and per-phase artifacts.
 
 ## Why git instead of the GitLab REST API?
 
