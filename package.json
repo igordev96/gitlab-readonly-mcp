@@ -8,6 +8,9 @@
   "bin": {
     "gitlab-readonly-mcp": "dist/index.js"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
