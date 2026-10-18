@@ -1,6 +1,9 @@
 import os from "node:os";
 import path from "node:path";
 
+/** How aggressively to refresh a mirror before reading from it. */
+export type FetchMode = "ttl" | "always";
+
 /** Resolved, validated runtime configuration. */
 export interface Config {
   /** GitLab base URL, without a trailing slash (e.g. https://gitlab.example.com). */
@@ -15,7 +18,16 @@ export interface Config {
   gitBin: string;
   /** Optional CA bundle path for servers using a private CA. */
   caInfo?: string;
+  /**
+   * `ttl` fetches only when the mirror is older than `fetchTtlSeconds`;
+   * `always` fetches before every read.
+   */
+  fetchMode: FetchMode;
+  /** Age in seconds after which a mirror is considered stale. */
+  fetchTtlSeconds: number;
 }
+
+export const DEFAULT_FETCH_TTL_SECONDS = 600;
 
 function stripTrailingSlashes(value: string): string {
   return value.replace(/\/+$/, "");
@@ -59,5 +71,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const gitBin = (env.GITLAB_GIT_BIN ?? "git").trim() || "git";
   const caInfo = (env.GITLAB_CA_INFO ?? "").trim() || undefined;
 
-  return { host, token, cacheDir, defaultProject, gitBin, caInfo };
+  const rawMode = (env.GITLAB_FETCH_MODE ?? "ttl").trim().toLowerCase();
+  if (rawMode !== "ttl" && rawMode !== "always") {
+    throw new Error(`GITLAB_FETCH_MODE must be "ttl" or "always" (got "${rawMode}").`);
+  }
+
+  const rawTtl = (env.GITLAB_FETCH_TTL_SECONDS ?? String(DEFAULT_FETCH_TTL_SECONDS)).trim();
+  const fetchTtlSeconds = Number(rawTtl);
+  if (!Number.isFinite(fetchTtlSeconds) || fetchTtlSeconds < 0) {
+    throw new Error(`GITLAB_FETCH_TTL_SECONDS must be a number >= 0 (got "${rawTtl}").`);
+  }
+
+  return {
+    host,
+    token,
+    cacheDir,
+    defaultProject,
+    gitBin,
+    caInfo,
+    fetchMode: rawMode,
+    fetchTtlSeconds,
+  };
 }

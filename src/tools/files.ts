@@ -18,7 +18,8 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
       description:
         "Return the contents of a file at a given branch, tag, or commit WITHOUT checking it out. " +
         "Use this to inspect files on a branch other than the one currently checked out. " +
-        "The repository is mirrored locally on first use.",
+        "The repository is mirrored locally on first use and refreshed when it goes stale; " +
+        "the result reports the resolved commit and the mirror's last sync time.",
       inputSchema: {
         ref: z
           .string()
@@ -60,12 +61,22 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
           );
         }
 
-        const open = `<file project="${result.project}" ref="${result.ref}" commit="${result.commit}" path="${result.path}"${result.truncated ? ' truncated="true"' : ""}>`;
+        const attributes = [
+          `project="${result.project}"`,
+          `ref="${result.ref}"`,
+          `commit="${result.commit}"`,
+          `path="${result.path}"`,
+          result.syncedAt ? `synced_at="${result.syncedAt.toISOString()}"` : undefined,
+          result.truncated ? 'truncated="true"' : undefined,
+        ]
+          .filter((value): value is string => value !== undefined)
+          .join(" ");
+
         const body = result.truncated
           ? `${result.content}\n</file>\n[truncated: content exceeded the ${limit} byte limit]`
           : `${result.content}\n</file>`;
 
-        return { content: [{ type: "text" as const, text: `${open}\n${body}` }] };
+        return { content: [{ type: "text" as const, text: `<file ${attributes}>\n${body}` }] };
       } catch (error) {
         if (error instanceof NotFoundError) {
           return errorResult(error.message);
