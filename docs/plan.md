@@ -8,9 +8,10 @@
 > runbook — lives in [`history.md`](history.md). Keep the two apart: this file
 > should not grow as phases land.
 
-Status: phases 0, 1, 2a and 2b-1 complete; newest tag `v0.3.0` (`list_refs`,
-`resolve_ref`). **2b-2** (`list_tree`) is implemented, awaiting its commit and
-tag. Detail behind the tags: `history.md`.
+Status: phases 0, 1, 2a and 2b complete; newest tag `v0.4.0` (`list_tree`).
+All four read tools — `list_refs`, `resolve_ref`, `list_tree`, `get_file` — are
+implemented; 2b-1 and 2b-2 have not yet been exercised against the real GitLab.
+Next: 2c. Detail behind the tags: `history.md`.
 Owner: igordev96
 Author: OpenCode
 
@@ -268,9 +269,8 @@ truncation flag when output is capped.
 | 3 | Diff & history: `compare`, `diff_file`, `log`, `get_commit`, `blame` | "What changed between `develop` and `fix/PROJ-7608`?" works |
 | 4 | Polish: `search`, `pickaxe`, URL parser, truncation, caching, stale-visibility | Freshness provenance visible on every read |
 
-> **Status:** phases 0, 1, 2a and 2b-1 complete, 2b-1 being `v0.3.0`. 2b-2
-> (`list_tree`) is implemented and awaiting its commit and tag. Next is 2c (repo
-> registry), then 3–4. Per-phase detail: [`history.md`](history.md).
+> **Status:** phases 0–2b complete; 2b-1 is `v0.3.0` and 2b-2 is `v0.4.0`. Next
+> is 2c (repo registry), then 3–4. Per-phase detail: [`history.md`](history.md).
 
 ### Source layout
 

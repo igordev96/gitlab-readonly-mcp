@@ -18,6 +18,7 @@ reference its own tag, so each milestone is recorded here by a follow-up commit.
 | `v0.2.0` | `1281009` | Phase 2a — TTL + fetch-on-miss freshness, per-project fetch lock, `synced_at` provenance; the suite moved from `scripts/` to `test/`. | ✅ After the token/restart fix. |
 | `v0.2.1` | `f91fd4f` | Failure diagnostics — git's own stderr surfaced and classified into credentials / project path / private CA / network. | ✅ A read that had previously failed returned both `commit` and `synced_at`. |
 | `v0.3.0` | `b779788` | Phase 2b-1 — `list_refs`, `resolve_ref`, close-match hints. Also carries the version sourced from `package.json`. | ⏳ Not yet exercised through OpenCode. |
+| `v0.4.0` | `50f697e` | Phase 2b-2 — `list_tree`: browse a directory at any ref, one level deep or recursive, with blob sizes, a cap and provenance. | ⏳ Not yet exercised through OpenCode. |
 
 Phase 0 predates the first tag: it was verified by hand — mirror clone succeeded,
 `fix/PROJ-7608` was present, `ls-tree` listed files, and
@@ -72,6 +73,7 @@ Running record of things learned while building. Keep appending.
 | 2026-10-18 | `git ls-tree <commit>:<dir>` reports paths **relative to `<dir>`** — listing `src` yields `index.tsx`, not `src/index.tsx`. A test asserting full paths failed and caught it; the manual probe that "confirmed" the format had been read carelessly. | `listTree` re-roots every entry through the listed directory, so paths compose directly with `get_file`'s `path`. A trailing slash is stripped first, or the prefix would double it up. |
 | 2026-10-18 | `ls-tree` exits 128 for both a missing path (`fatal: Not a valid object name`) and a file where a directory was expected (`fatal: not a tree object`). | `treeFailure` turns them into distinct not-found messages, and the second points at `get_file` — git's own wording never says which tool the caller actually wanted. |
 | 2026-10-18 | `ls-tree -l` right-aligns the size column with leading spaces and prints `-` for a tree, so splitting the header on a single space yields empty fields; and splitting the listing on newlines would let a path containing a newline forge a second entry. | The listing is read with `-z` and parsed as NUL-terminated records, header split with `trim().split(/\s+/)`. Both verified against real output rather than assumed, and both covered by parser tests. |
+| 2026-10-18 | **Phase 2b-2 complete and tagged `v0.4.0`.** `list_tree` implemented; suite grew from 60 tests / 11 suites to 79 / 14. | Exit criterion met: an agent can browse a tree it never cloned. The tag is annotated and points at the release commit, whose `package.json` says `0.4.0`. |
 
 ---
 
