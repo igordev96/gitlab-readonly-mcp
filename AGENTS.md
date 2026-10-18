@@ -32,6 +32,9 @@ changed and ask before starting the next. Do not chain unrelated changes.
 - Conventional Commits; LF line endings (see `.gitattributes`).
 - Run `npm run typecheck && npm test` before committing (`npm test` builds first).
 - Keep `docs/plan.md` — the canonical plan — updated as work lands.
+- The version the server reports is read from `package.json`; keep it equal to
+  the newest tag. `npm version <minor|patch>` bumps both in one step. That
+  command commits and tags, so it still needs approval first.
 
 ## Reporting
 

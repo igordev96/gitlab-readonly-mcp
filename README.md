@@ -200,6 +200,14 @@ working repo plus a bare repo it pushes to — so they exercise real clone and
 fetch behaviour, including freshness, without any network access or token. Each
 test file gets its own fixture directory, so files can run in parallel.
 
+### Versioning
+
+The version the server reports comes from `package.json`, and the rule is that it
+equals the newest tag. `npm version <minor|patch>` bumps `package.json` and
+creates the matching commit and tag in one step, so the two cannot drift apart.
+The compiled server's reported version is asserted against `package.json` in the
+test suite.
+
 ```
 src/                    server source
 test/

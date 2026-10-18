@@ -38,6 +38,17 @@ describe("compiled entry point", () => {
       const info = client.getServerVersion();
       assert.equal(info?.name, "gitlab-readonly");
 
+      // The reported version must come from package.json, so it cannot drift
+      // from the tag it was released as.
+      const pkg = JSON.parse(
+        fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"),
+      ) as { version?: string };
+      assert.equal(
+        info?.version,
+        pkg.version,
+        "the server should report exactly the version in package.json",
+      );
+
       const { tools } = await client.listTools();
       assert.ok(
         tools.some((tool) => tool.name === "get_file"),

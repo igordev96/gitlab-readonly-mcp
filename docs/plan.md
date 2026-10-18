@@ -309,6 +309,19 @@ covered. See §11 for why this shape was chosen.
 Stack: TypeScript, `@modelcontextprotocol/sdk`, `zod` for input schemas, Node
 child_process `spawn` (array args) for git.
 
+### Versioning
+
+The version the server reports to clients is read from `package.json`, and the
+rule is that it equals the newest tag. `npm version <minor|patch>` bumps
+`package.json` and creates the matching commit and tag in one step, so the two
+cannot drift. `test/startup.test.ts` asserts that the compiled server reports
+exactly `package.json`'s version, which is what makes the rule enforced rather
+than remembered.
+
+> History: `SERVER_VERSION` was a hand-maintained literal in `src/server.ts`, and
+> it sat at `0.1.0` while the newest tag was `v0.2.1` — precisely the drift a
+> single source of truth prevents.
+
 ### OpenCode wiring (Phase 1)
 
 ```jsonc
@@ -550,8 +563,8 @@ Running record of things learned during Phase 0. Keep appending.
 - `test/refs.test.ts` — new; `test/protocol.test.ts` extended. Suite: 60 tests /
   11 suites (was 38 / 8).
 
-Known loose end: `SERVER_VERSION` in `src/server.ts` still reads `0.1.0` while
-the newest tag is `v0.2.1`. It should be bumped when this work is tagged.
+Versioning: the reported server version is now read from `package.json` instead
+of a literal, so it cannot drift from the newest tag (see §7, "Versioning").
 
 ### Phase 2a artifacts
 
