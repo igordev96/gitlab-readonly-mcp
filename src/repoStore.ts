@@ -329,10 +329,6 @@ export class RepoStore {
 
   /** Remove the token from any text before it reaches a log or tool result. */
   private redact(value: string): string {
-    const token = this.config.token;
-    if (!token) {
-      return value;
-    }
-    return value.split(token).join("***");
+    return this.git.redact(value);
   }
 }

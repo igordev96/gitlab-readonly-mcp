@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Config } from "../config.js";
+import { GitError } from "../git.js";
+import { explainGitError } from "../gitDiagnostics.js";
 import { NotFoundError, type RepoStore } from "../repoStore.js";
 
 const DEFAULT_MAX_BYTES = 200_000;
@@ -80,6 +82,13 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
       } catch (error) {
         if (error instanceof NotFoundError) {
           return errorResult(error.message);
+        }
+        // A git failure carries git's own stderr, which is the difference
+        // between "clone failed" and "your token was rejected".
+        if (error instanceof GitError) {
+          return errorResult(
+            `Failed to read "${filePath}" at "${ref}".\n${explainGitError(error)}`,
+          );
         }
         const message = error instanceof Error ? error.message : String(error);
         return errorResult(`Failed to read "${filePath}" at "${ref}": ${message}`);

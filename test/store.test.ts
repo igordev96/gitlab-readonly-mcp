@@ -8,7 +8,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { Config } from "../src/config.js";
-import { Git } from "../src/git.js";
+import { Git, GitError } from "../src/git.js";
 import { NotFoundError, RepoStore } from "../src/repoStore.js";
 import { addBranchWithFile, buildFixture, commitOnBranch } from "./fixture.js";
 
@@ -130,5 +130,42 @@ describe("freshness", () => {
     const zero = new RepoStore(makeConfig({ fetchTtlSeconds: 0 }), new Git({ bin: "git" }));
     const result = await zero.readFile("demo", "main", "src/index.tsx");
     assert.equal(result.fetched, true);
+  });
+});
+
+describe("failure reporting", () => {
+  it("keeps git's own stderr on a failed clone", async () => {
+    // A host that is a real directory but not a repository: git fails offline,
+    // deterministically, with a message worth quoting. A cache directory of its
+    // own, because the shared one already holds a usable `demo` mirror.
+    const brokenHost = pathToFileURL(path.join(fixture.root, "not-a-repo")).href;
+    const broken = new RepoStore(
+      makeConfig({ host: brokenHost, cacheDir: path.join(fixture.root, "cache-stderr") }),
+      new Git({ bin: "git" }),
+    );
+
+    await assert.rejects(
+      () => broken.readFile("demo", "main", "src/index.tsx"),
+      (error: unknown) => {
+        assert.ok(error instanceof GitError, `expected a GitError, got ${String(error)}`);
+        assert.match(error.stderr, /does not appear to be a git repository/i);
+        return true;
+      },
+    );
+  });
+
+  it("does not leave a broken mirror behind when a clone fails", async () => {
+    const brokenHost = pathToFileURL(path.join(fixture.root, "not-a-repo")).href;
+    const broken = new RepoStore(
+      makeConfig({ host: brokenHost, cacheDir: path.join(fixture.root, "cache-failed") }),
+      new Git({ bin: "git" }),
+    );
+
+    await broken.readFile("demo", "main", "src/index.tsx").catch(() => undefined);
+    assert.equal(
+      fs.existsSync(broken.mirrorPath("demo")),
+      false,
+      "a failed clone must not be mistaken for a usable mirror",
+    );
   });
 });

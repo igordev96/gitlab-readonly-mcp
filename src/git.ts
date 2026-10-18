@@ -152,9 +152,22 @@ export class Git {
       throw new GitError(
         `git ${args[0] ?? ""} failed (exit ${result.code ?? "?"})`,
         result.code,
-        result.stderr.trim(),
+        this.redact(result.stderr.trim()),
       );
     }
     return result;
+  }
+
+  /**
+   * Remove the configured token from any text before it reaches a log or a tool
+   * result. git should never echo an `http.extraheader` value, but a failure
+   * message is exactly where a secret tends to leak, so redact defensively.
+   */
+  redact(text: string): string {
+    const token = this.options.token;
+    if (!token) {
+      return text;
+    }
+    return text.split(token).join("***");
   }
 }

@@ -108,4 +108,19 @@ describe("MCP protocol", () => {
     });
     assert.match(textOf(response), /truncated/);
   });
+
+  it("hands the agent git's own words when a clone fails", async () => {
+    // "ghost-project" is not in the fixture server, so the clone fails offline.
+    const response = (await client.callTool({
+      name: "get_file",
+      arguments: { project: "ghost-project", ref: "main", path: "src/index.tsx" },
+    })) as unknown as TextResult;
+
+    assert.equal(response.isError, true);
+    const text = textOf(response);
+    assert.match(text, /Failed to read "src\/index\.tsx" at "main"/);
+    assert.match(text, /Failed to clone ghost-project/);
+    assert.match(text, /git said: /, "git's stderr must reach the agent, not be swallowed");
+    assert.match(text, /does not appear to be a git repository/i);
+  });
 });
