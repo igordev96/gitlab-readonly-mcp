@@ -21,6 +21,7 @@ reference its own tag, so each milestone is recorded here by a follow-up commit.
 | `v0.4.0` | `50f697e` | Phase 2b-2 — `list_tree`: browse a directory at any ref, one level deep or recursive, with blob sizes, a cap and provenance. | ✅ Verified live against `example-app`: `src` listing with sizes, recursive capped at 200 of 1710, and listing a file pointed at `get_file`. |
 | `v0.5.0` | `cdd9a2c` | Freshness hardening from the `v0.4.0` live check — the sync clock is a stamp written only on success, and a refresh that fails answers from the cache and reports why. | ✅ The degraded path, live: with the token still rejected, all four tools answered from the cache with `refresh_failed="true"` instead of failing (`list_refs` 74 refs, `list_refs` search 8, `list_tree` 23 entries, `get_file` at the same `8297d0d` Phase 1 read). No `synced_at` advanced. The success path — a fetch that writes the stamp — was unverified at that point; the later `v0.5.1` runs proved it. The check found two defects, both in the findings log. |
 | `v0.5.1` | `a2919b3` | Both defects from the `v0.5.0` check: the refresh note now carries the diagnostic, and an unmeasured sync time reads `synced_at="unknown"` instead of vanishing. | ✅ The failure note is verified live; the `unknown` rendering is still tests-only. Two runs. **Working token:** the first read fetched (2099 ms) and reported a real `synced_at`, later reads inside the TTL were 74–81 ms reporting the same value, and the mirror gained a 14-byte `mcp-last-sync`. **Token deliberately broken:** all four tools answered from cache in ~500 ms with `refresh_failed="true"`, the credentials hint and `git said: … could not read Username …`, counts and commit unchanged, and `synced_at` stayed at the stored `17:48:48.101Z` while git's own `FETCH_HEAD` was zeroed and restamped at `19:03:55` — the old build would have reported that failure time as the sync time. `synced_at="unknown"` needs a mirror with no stamp; that machine has none, so it stays unit-tested only. |
+| `v0.6.0` | `3135893` | Phase 2c-1 — the project registry (`repos.json`), a per-project freshness policy including `manual`, and the `list_repos` / `sync_repo` tools. The registry holds policy only: a project's age still comes from the mirror's stamp. | ✅ All four calls matched their predicted shapes against the pilot project. `list_repos` before any read: `count="0"` in 9 ms — "registered on first use", made visible rather than assumed. `get_file` on `fix/PROJ-7608` fetched in 2653 ms, `commit="8297d0da…"`, `synced_at="2026-10-18T20:52:24.529Z"`. `list_repos` then: `count="1"`, `source=mirror freshness=ttl ttl=600s present=true`, carrying *that* stamp. `sync_repo` took 887 ms and reported `20:52:25.491Z`; a final `list_repos` reported that newer value although `repos.json` on disk holds no time at all — the one-clock claim shown, not argued. `manual` mode and local clones were not exercised live (tests only). |
 
 Phase 0 predates the first tag: it was verified by hand — mirror clone succeeded,
 `fix/PROJ-7608` was present, `ls-tree` listed files, and
@@ -90,6 +91,11 @@ Running record of things learned while building. Keep appending.
 | 2026-10-18 | Same run: `resolve_ref` on a non-existent ref failed with `Ref not found: "no/such-branch" … The mirror could not be refreshed either, so a ref created since the last sync would not appear here: <credentials hint> <git said: …>`. | Absence is not claimed as evidence when the refresh failed, and the caveat now carries the full diagnosis rather than a bare "could not be refreshed". This is the one case where a plain not-found would be actively misleading. |
 | 2026-10-18 | Same run: every read cost ~500 ms although nothing changed, and the first cost 1603 ms. | The stored stamp was 15 minutes old and the default TTL is 600 s, so each read re-attempted the fetch. No retry flag is involved: a failed fetch records no sync, so the age stays past the TTL and the next read tries again. The fix's own property — a failure writes nothing — is what makes recovery automatic. |
 | 2026-10-18 | The fix for the failed-fetch clock: the sync time moved out of git's `FETCH_HEAD` into a `mcp-last-sync` stamp inside the mirror, written only after a fetch returns success — and at clone time, since a clone writes no `FETCH_HEAD`. | Suite grew from 79 tests / 14 suites to 82 / 14: the stamp survives a restart, a failed fetch leaves it alone, and a freshly stamped `FETCH_HEAD` is ignored. Chosen over a one-line empty-file guard, which would infer success from an implementation detail of git rather than a record of one. |
+| 2026-10-18 | The registry sketched in the plan carried `lastFetchAt` and `defaultBranch` per project, which would have put a second clock beside the mirror's stamp — the exact shape of the `v0.5.0` defect, where two answers to "when did this sync?" disagreed and the wrong one won. | The registry records **policy only** (`source`, `localPath`, `cloneStrategy`, `freshnessMode`, `freshnessTtlSeconds`); `list_repos` reads age from the stamp. Verified live: after `sync_repo` moved the stamp to `20:52:25.491Z`, the listing reported the new value while `repos.json` contains no timestamp field at all. Plan §3.2 corrected. |
+| 2026-10-18 | Mirrors register themselves when they are *used*, not by scanning the cache, so an install that predates the registry answers the first `list_repos` with `count="0"` — even though it has held a mirror for hours. | Deliberate, and observed live as the first call of the check. The alternative is a walk of `mirrors/` plus a `registered=false` state, and a project path cannot be recovered from a mirror directory name with certainty: `mirrorPath` sanitises every character outside `[A-Za-z0-9._-]` to `_`. One empty listing, once, was judged the smaller cost. Revisit in 2c-2 if it bites. |
+| 2026-10-18 | `manual` read strictly as "no automatic network access" raised a question the plan never asked: a first-use *clone* is automatic network access too, so a manual project with no mirror would have cloned itself on the first read. | Decided with the owner: `manual` suppresses the clone as well, and the read fails with *"\<project\> is in `manual` freshness mode and has no mirror yet. Run `sync_repo` to fetch it."* `ensureMirror` takes `allowClone`, which only `sync_repo` passes. A test asserts the mirror directory does not exist after the refused read. |
+| 2026-10-18 | `syncMirror(project)` had existed since Phase 1 with nothing calling it — `ensureMirror` plus `execFetch` in one method, superseded before it was ever used, and covered by no test. | Removed. `syncRepo` fills the role and reports the resulting `synced_at`, which is what `sync_repo` has to show. Two near-identical methods would have drifted. |
+| 2026-10-18 | A new store test asserted that a file's content matched `'main'`, but an earlier test in the same file commits `main-v2` to that branch, so the fresh mirror this test cloned saw the newer content and the assertion failed. The test was wrong, not the code. | Assert the stable part (`export const hello`) rather than a value a sibling test mutates. The second time this project has paid for a test that was wrong about shared state — cf. the fixture-versus-mirror confusion in Phase 2a. |
 
 ---
 
@@ -97,6 +103,41 @@ Running record of things learned while building. Keep appending.
 
 What each phase actually touched. The plan keeps only the design; this is the
 blow-by-blow.
+
+### Phase 2c-1 artifacts
+
+- `src/registry.ts` — new: `parseRegistry` (validates the entries we understand,
+  carries unknown keys through, and returns `undefined` for a file that is not
+  ours so the caller decides), plus `RepoRegistry` — lazy single load, serialised
+  writes through a temp file and a rename, and an `ensure` that never overwrites
+  an existing entry. No timestamp field: the registry is policy only.
+- `src/config.ts` — `FetchMode` gains `manual`, accepted in `GITLAB_FETCH_MODE`
+  as the global default; the per-project override lives in the registry.
+- `src/repoStore.ts` — `effectivePolicy`/`policyFor` (the single place a
+  project's policy is resolved), a `manual` short-circuit in `refresh` returning
+  `skipped: "manual"`, `ensureMirror` refusing to clone a manual project unless
+  the caller passes `allowClone`, `syncRepo` in place of the removed
+  `syncMirror`, `listRepos` reading each project's age from the stamp, and
+  `registerMirror` (best effort — a registry that cannot be written must not fail
+  a read). `notFoundRefMessage` now takes `{ refreshError, skipped }` and names
+  `sync_repo` in manual mode.
+- `src/tools/repos.ts` — new: `list_repos` (a row per project of `source=`,
+  `freshness=`, `ttl=`, `present=`, `local_path=` and `synced_at=`) and
+  `sync_repo`.
+- `src/server.ts` — registers the two management tools and mentions them in the
+  server instructions.
+- `test/registry.test.ts` — new: parsing, persistence, ordering, never
+  overwriting, the corrupt-file path and the zero-byte file.
+- `test/repos.test.ts` — new: the listing renderer, including the unknown age.
+- `test/store.test.ts` — a policy describe: registration on first use, manual
+  refusing the clone, manual ignoring both `always` and a missing ref, the
+  `always` override beating a 24-hour TTL, a stale list that cannot see a branch
+  pushed a moment ago, and `present=false` for something registered but not on
+  disk.
+- `test/protocol.test.ts` — both tools as a client sees them. Suite: 117 tests /
+  20 suites (was 93 / 16).
+- No new dependency and no new environment variable. `repos.json` appears in the
+  cache directory the first time a project is used.
 
 ### Phase 2b-2 artifacts
 

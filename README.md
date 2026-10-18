@@ -7,9 +7,10 @@ branches that are not checked out locally — without ever touching your working
 tree. Content is read from local bare mirrors that the server keeps in a cache
 directory.
 
-> Phase 2b implementation. Exposes `get_file`, `list_tree`, `list_refs`, and
-> `resolve_ref`, backed by local bare mirrors that keep themselves fresh
-> (TTL + fetch-on-miss).
+> Phase 2c-1 implementation. Exposes `get_file`, `list_tree`, `list_refs`,
+> `resolve_ref`, plus `list_repos` and `sync_repo` for seeing and controlling
+> what is registered. Backed by local bare mirrors that keep themselves fresh
+> (TTL + fetch-on-miss), under a per-project policy that can turn that off.
 > See the plan at [`docs/plan.md`](docs/plan.md) — the canonical, in-repo design
 > document — and [`docs/history.md`](docs/history.md) for milestones, findings
 > and per-phase artifacts.
@@ -46,8 +47,11 @@ All configuration is via environment variables.
 | `GITLAB_MCP_CACHE` | no | Cache root for mirrors. Defaults to `%LOCALAPPDATA%\gitlab-readonly-mcp` (or `~/.cache/...` elsewhere). |
 | `GITLAB_CA_INFO` | no | Path to a CA bundle, if the server uses a private CA. |
 | `GITLAB_GIT_BIN` | no | Git executable. Defaults to `git`. |
-| `GITLAB_FETCH_MODE` | no | `ttl` (default) fetches only when a mirror is older than the TTL. `always` fetches before every read. |
+| `GITLAB_FETCH_MODE` | no | Default freshness policy for every project: `ttl` (default) fetches only when a mirror is older than the TTL, `always` fetches before every read, `manual` never fetches by itself. A project can override it in `repos.json`. |
 | `GITLAB_FETCH_TTL_SECONDS` | no | Age in seconds after which a mirror counts as stale. Default `600` (10 minutes). `0` behaves like `always`. |
+
+These are the defaults; a project can override its freshness policy in
+`repos.json` (see [Repositories and policy](#repositories-and-policy)).
 
 ## Wire into OpenCode
 
@@ -84,11 +88,13 @@ Use the **absolute** path to `dist/index.js`: a global MCP server's working
 directory is the workspace it is launched from, not this project.
 
 The tools appear as `gitlab_get_file`, `gitlab_list_tree`, `gitlab_list_refs`,
-and `gitlab_resolve_ref`.
+`gitlab_resolve_ref`, `gitlab_list_repos` and `gitlab_sync_repo`.
 
 ## Usage
 
 ```
+gitlab_list_repos()
+gitlab_sync_repo(project="group/sub/repo")
 gitlab_list_refs(project="group/sub/repo", kind="branches", search="PROJ")
 gitlab_resolve_ref(project="group/sub/repo", ref="fix/PROJ-7608")
 gitlab_list_tree(project="group/sub/repo", ref="fix/PROJ-7608", path="src")
@@ -97,7 +103,9 @@ gitlab_get_file(project="group/sub/repo", ref="fix/PROJ-7608", path="src/index.t
 
 Start with `list_refs` to find the branch and `resolve_ref` to confirm it, use
 `list_tree` to see what is in it, then `get_file` to read a specific file. An
-agent can do all four against a repository it has never cloned.
+agent can do all four against a repository it has never cloned. `list_repos` and
+`sync_repo` are the exception: they are about the server's own state rather than
+about reading content.
 
 Results are wrapped so provenance is always visible:
 
@@ -147,9 +155,52 @@ Binary files are refused. File output is capped (default 200 KB, override with
 `max_bytes`); ref listings and tree listings are capped too (default 200, override
 with `max_refs` and `max_entries` respectively) and say when they were cut short.
 
+## Repositories and policy
+
+A project registers itself the first time it is used — its mirror is cloned on
+demand — and the registry is a small `repos.json` in the cache directory:
+
+```
+<repos count="1">
+group/sub/repo	source=mirror	freshness=ttl	ttl=600s	present=true	synced_at="2026-10-18T20:52:24.529Z"
+</repos>
+```
+
+`synced_at` is when the mirror last fetched **successfully**, or `unknown` when
+no fetch has ever stamped it; `present=false` means the project is registered but
+its data is not on disk. `list_repos` costs no git call.
+
+A project's policy can be overridden by hand (absent fields mean the configured
+default):
+
+```jsonc
+{
+  "version": 1,
+  "repos": {
+    "group/sub/repo": {
+      "source": "mirror",          // "mirror" | "local"
+      "localPath": null,           // set when source == "local"
+      "cloneStrategy": "full",
+      "freshnessMode": "manual",   // "ttl" | "always" | "manual"
+      "freshnessTtlSeconds": 3600
+    }
+  }
+}
+```
+
+`sync_repo(project)` fetches immediately, ignoring the TTL. That is what makes
+`manual` usable, and what to call when you want a fresh answer now. Unlike a
+read, it reports a failure as an error instead of answering from the cache.
+
+The registry deliberately records no fetch time: age comes from the mirror's own
+stamp (`mcp-last-sync`), so there is one clock and it cannot disagree with
+itself. A `repos.json` that does not parse is kept aside as
+`repos.json.corrupt` rather than deleted.
+
 ## Freshness
 
-Mirrors are cloned on first use and refreshed automatically:
+Mirrors are cloned on first use and refreshed automatically, unless the policy is
+`manual`:
 
 - **TTL** — a read refreshes the mirror when it is older than
   `GITLAB_FETCH_TTL_SECONDS` (default 10 minutes).
@@ -158,6 +209,12 @@ Mirrors are cloned on first use and refreshed automatically:
   sync. (If the read already fetched, no second fetch is attempted.)
 - **`always`** — set `GITLAB_FETCH_MODE=always` to fetch before every read when
   correctness matters more than latency.
+- **`manual`** — set `GITLAB_FETCH_MODE=manual`, or `freshnessMode: "manual"` for
+  one project, and the server touches the network only when `sync_repo` asks it
+  to: no TTL fetch, no fetch-on-miss, and not even the first-use clone. A project
+  with no mirror yet is refused with a message naming `sync_repo`, and a ref that
+  cannot be resolved says the same thing instead of implying that it does not
+  exist.
 - **Serialised** — fetches are serialised per project, so parallel tool calls
   never run overlapping fetches for the same repo.
 
@@ -236,18 +293,20 @@ test file gets its own fixture directory, so files can run in parallel.
 ### Versioning
 
 The version the server reports comes from `package.json`, and the rule is that it
-equals the newest tag. `npm version <minor|patch>` bumps `package.json` and
-creates the matching commit and tag in one step, so the two cannot drift apart.
-The compiled server's reported version is asserted against `package.json` in the
-test suite.
+equals the newest tag. A release is made by hand — bump `package.json` and
+`package-lock.json`, commit `chore(release): X.Y.Z`, then an annotated `vX.Y.Z`
+tag — so the bump is a reviewable commit rather than a side effect. The compiled
+server's reported version is asserted against `package.json` in the test suite.
 
 ```
 src/                    server source
 test/
   fixture.ts            builds the throwaway "GitLab"
-  store.test.ts         mirror resolution, guards, freshness
+  store.test.ts         mirror resolution, guards, freshness, project policy
+  registry.test.ts      the registry file: parsing, persistence, corruption
   refs.test.ts          ref listing, resolution, close matches
   tree.test.ts          directory listings, the ls-tree parser, rendering
+  repos.test.ts         rendering the registry listing
   protocol.test.ts      the MCP surface over an in-memory transport
   startup.test.ts       the compiled entry point over real stdio
 tsconfig.json           typecheck: src/ + test/, no emit
@@ -261,7 +320,9 @@ tsconfig.build.json     emit: src/ only → dist/
   `synced_at` provenance, and a failed refresh that serves the cache and says so.
 - **Phase 2b (done):** `list_refs`, `resolve_ref` (both with close-match hints)
   and `list_tree`.
-- **Phase 2c:** repo registry (`add_repo`/`list_repos`/`sync_repo`), prefer local
-  clones, `manual` freshness mode.
+- **Phase 2c-1 (done):** the project registry, `list_repos`, `sync_repo`,
+  per-project policy and `manual` freshness mode.
+- **Phase 2c-2 (next):** `add_repo`/`remove_repo`, and preferring a local clone
+  over a mirror.
 - **Phase 3:** `compare`, `diff_file`, `log`, `get_commit`, `blame`.
 - **Phase 4:** `search` (`git grep`), `pickaxe`, GitLab URL parser, polish.
