@@ -19,6 +19,7 @@ reference its own tag, so each milestone is recorded here by a follow-up commit.
 | `v0.2.1` | `f91fd4f` | Failure diagnostics — git's own stderr surfaced and classified into credentials / project path / private CA / network. | ✅ A read that had previously failed returned both `commit` and `synced_at`. |
 | `v0.3.0` | `b779788` | Phase 2b-1 — `list_refs`, `resolve_ref`, close-match hints. Also carries the version sourced from `package.json`. | ✅ `resolve_ref` and `list_refs` both returned real refs from the pilot project. A `list_refs` TTL refresh was rejected by GitLab as credentials — see findings. |
 | `v0.4.0` | `50f697e` | Phase 2b-2 — `list_tree`: browse a directory at any ref, one level deep or recursive, with blob sizes, a cap and provenance. | ✅ Verified live against `example-app`: `src` listing with sizes, recursive capped at 200 of 1710, and listing a file pointed at `get_file`. |
+| `v0.5.0` | `cdd9a2c` | Freshness hardening from the `v0.4.0` live check — the sync clock is a stamp written only on success, and a refresh that fails answers from the cache and reports why. | ⏳ Not yet exercised through OpenCode on this build. |
 
 Phase 0 predates the first tag: it was verified by hand — mirror clone succeeded,
 `fix/PROJ-7608` was present, `ls-tree` listed files, and
