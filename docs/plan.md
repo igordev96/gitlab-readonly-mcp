@@ -254,9 +254,11 @@ truncation flag when output is capped.
 > **Status:** Phase 0 ✅ verified. Phase 1 ✅ implemented, locally tested and
 > **verified live** — the agent read `src/index.tsx` from `fix/PROJ-7608`
 > (commit `8297d0d`) through OpenCode. Tagged `v0.1.0`.
-> Phase 2a ✅ implemented and locally tested (21/21, in three files run in
-> parallel; freshness covered by real clone/fetch against a fixture server),
-> with the suite moved from `scripts/` to `test/`. Tagged `v0.2.0`.
+> Phase 2a ✅ implemented, tested (freshness covered by real clone/fetch against
+> a fixture server) and **verified live** through OpenCode, with the suite moved
+> from `scripts/` to `test/`. Tagged `v0.2.0`.
+> Failure diagnostics ✅ added on top: git's stderr is surfaced and classified
+> instead of being swallowed. Tagged `v0.2.1`.
 > Phases 2b–4 not started.
 
 ### Source layout
@@ -504,6 +506,7 @@ Running record of things learned during Phase 0. Keep appending.
 | 2026-10-18 | Node's test runner executes one child process per test file, in parallel. | Each test file builds its own fixture under a distinct temp directory, so files never collide. |
 | 2026-10-19 | A live read failed with only *"Failed to clone \<project\> from \<host\>"*. The tool forwarded `error.message` and dropped the `GitError.stderr` field, so a rejected token was indistinguishable from a VPN outage; diagnosing it took manual probing. | `GitError.stderr` is now surfaced as a `git said: …` excerpt and classified by `src/gitDiagnostics.ts` into credentials / project path / private CA / network. Token redaction moved into `Git.redact` so every consumer gets it. Tested against real git stderr samples. |
 | 2026-10-19 | The real cause: the token in the environment was valid, but the MCP child process had been started before it was set, so the server authenticated with the previous (revoked) value. | Documented in README under Troubleshooting: a running server keeps the token it started with, so restart the client after changing it. The credential hint now says this in the failure message itself. |
+| 2026-10-19 | **Phase 2a verified live.** After the token fix, a read of `src/index.tsx` on `fix/PROJ-7608` through OpenCode returned both `commit` and `synced_at`. | Freshness is confirmed end to end, not just against the fixture. Tagged `v0.2.1` on `f91fd4f` together with the failure diagnostics. |
 | 2026-10-18 | **Phase 2a complete.** TTL + fetch-on-miss freshness implemented and locally tested; the suite moved out of `scripts/` into `test/`. | Exit criterion met: a branch pushed minutes ago is readable and every read reports `synced_at`. Tagged `v0.2.0` on `1281009`. |
 
 ### Phase 2a artifacts
