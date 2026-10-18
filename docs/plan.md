@@ -3,8 +3,9 @@
 > **This file is the canonical plan.** It lives in the repository at `docs/plan.md`
 > and is version-controlled alongside the code. Edit it here.
 
-Status: **Phase 2b in progress** — `list_refs` and `resolve_ref` implemented
-(2b-1). Phases 0, 1 and 2a complete and verified live. Next: `list_tree` (2b-2).
+Status: **Phase 2b-1 complete**, tagged `v0.3.0` — `list_refs` and `resolve_ref`
+implemented and tested. Phases 0, 1 and 2a complete and verified live. Next:
+`list_tree` (2b-2).
 Owner: igordev96
 Author: OpenCode
 
@@ -271,6 +272,8 @@ truncation flag when output is capped.
 > instead of being swallowed. Tagged `v0.2.1`.
 > Phase 2b-1 ✅ implemented and tested: `list_refs`, `resolve_ref`, and
 > close-match hints (which also improved `get_file`'s not-found error).
+> Tagged `v0.3.0` on `b779788`, which also carries the version sourced from
+> `package.json` — see "Versioning" below.
 > Phase 2b-2 (`list_tree`) and phases 2c–4 not started.
 
 ### Source layout
@@ -543,6 +546,8 @@ Running record of things learned during Phase 0. Keep appending.
 | 2026-10-18 | A first run of the new tests reported `default_branch="master"` for a repository whose only branch is `main`. The fixture's bare "server" was created with `git init --bare` and no `-b`, so its HEAD named a branch that never existed. | Fixture initialises the server with `-b main`. Worth noting because the mirror's HEAD is copied from the remote's HEAD — a real GitLab repo has this right, a hand-made bare repo may not. |
 | 2026-10-18 | `%(committerdate:iso-strict)` on an annotated tag reflects the tag object, not the commit it points at; only `%(*committerdate:iso-strict)` is dereferenced. | Read both fields and prefer the dereferenced one, matching how `%(objectname)`/`%(*objectname)` are used to peel tags to their commit. |
 | 2026-10-18 | A tool-callback result typed as an **interface** failed to compile against the SDK (`Index signature for type 'string' is missing`), while the identical shape as a **type alias** compiled. | Only object-literal-typed aliases get an implicit index signature; interfaces do not. `ToolTextResult` in `src/tools/result.ts` is a type alias for this reason. |
+| 2026-10-18 | `SERVER_VERSION` was a hand-maintained literal in `src/server.ts` and had silently drifted: the server reported `0.1.0` while the newest tag was `v0.2.1`. | Version is now read from `package.json`, whose bump and the tag are the same step (`npm version`), so drift is impossible. `test/startup.test.ts` asserts the compiled server reports exactly `package.json`'s version. |
+| 2026-10-18 | **Phase 2b-1 complete and tagged `v0.3.0`.** `list_refs`, `resolve_ref` and the close-match hints implemented; suite grew from 38 tests / 8 suites to 60 / 11. | Exit criterion met: an agent can find a branch, confirm its commit, and read a file, all without cloning. Tag is annotated and points at the release commit, whose `package.json` says `0.3.0`. |
 
 ### Phase 2b-1 artifacts
 
