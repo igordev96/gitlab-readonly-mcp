@@ -10,11 +10,14 @@
 
 Status: phases 0, 1, 2a and 2b complete; newest tag `v0.5.1` (freshness
 hardening). All four read tools are implemented and have been exercised against
-the real GitLab. A rejected fetch can no longer advance the sync clock, and a
-refresh that fails answers from the cache and says why — verified live on the
-degraded path, including the two defects that check found. The token the check
-saw rejected is still open, and the success path (a fetch that writes the stamp)
-is unverified until it works. See `history.md`.
+the real GitLab, on the success path and on a deliberately broken token: a
+rejected fetch can no longer advance the sync clock — with a stamp on disk, a
+failing refresh leaves `synced_at` at the stored value while git's own
+`FETCH_HEAD` moves — and a refresh that fails answers from the cache and says
+why. `synced_at="unknown"` for a stamp-less mirror is covered by tests only,
+no such mirror existing here. The token is supplied by OpenCode's config
+(`~/.config/opencode/opencode.jsonc`), not by the shell. Next: 2c. See
+`history.md`.
 Owner: igordev96
 Author: OpenCode
 
