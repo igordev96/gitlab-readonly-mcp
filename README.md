@@ -7,8 +7,9 @@ branches that are not checked out locally — without ever touching your working
 tree. Content is read from local bare mirrors that the server keeps in a cache
 directory.
 
-> Phase 2b implementation. Exposes `get_file`, `list_refs`, and `resolve_ref`,
-> backed by local bare mirrors that keep themselves fresh (TTL + fetch-on-miss).
+> Phase 2b implementation. Exposes `get_file`, `list_tree`, `list_refs`, and
+> `resolve_ref`, backed by local bare mirrors that keep themselves fresh
+> (TTL + fetch-on-miss).
 > See the plan at [`docs/plan.md`](docs/plan.md) — the canonical, in-repo design
 > document — and [`docs/history.md`](docs/history.md) for milestones, findings
 > and per-phase artifacts.
@@ -82,20 +83,21 @@ Or add it to configuration by hand (`mcp.servers`):
 Use the **absolute** path to `dist/index.js`: a global MCP server's working
 directory is the workspace it is launched from, not this project.
 
-The tools appear as `gitlab_get_file`, `gitlab_list_refs`, and
-`gitlab_resolve_ref`.
+The tools appear as `gitlab_get_file`, `gitlab_list_tree`, `gitlab_list_refs`,
+and `gitlab_resolve_ref`.
 
 ## Usage
 
 ```
 gitlab_list_refs(project="group/sub/repo", kind="branches", search="PROJ")
 gitlab_resolve_ref(project="group/sub/repo", ref="fix/PROJ-7608")
+gitlab_list_tree(project="group/sub/repo", ref="fix/PROJ-7608", path="src")
 gitlab_get_file(project="group/sub/repo", ref="fix/PROJ-7608", path="src/index.tsx")
 ```
 
-Start with `list_refs` to find the branch, `resolve_ref` to confirm it (and get
-its commit), then `get_file` to read from it. An agent can do all three against a
-repository it has never cloned.
+Start with `list_refs` to find the branch and `resolve_ref` to confirm it, use
+`list_tree` to see what is in it, then `get_file` to read a specific file. An
+agent can do all four against a repository it has never cloned.
 
 Results are wrapped so provenance is always visible:
 
@@ -117,6 +119,22 @@ tag     f1e2d3c4b5a6  v2.4.0            release 2.4.0
 local mirror was last refreshed — so the answer states how fresh it is instead
 of quietly going stale.
 
+`list_tree` marks directories and reports each file's size in bytes, so you can
+tell a small config from a bundle before reading it:
+
+```
+<tree project="group/sub/repo" ref="fix/PROJ-7608" commit="abc123…" path="src" count="3" synced_at="2026-10-18T09:12:44.318Z">
+tree  -      src/components
+blob  3047   src/index.tsx
+blob  412    src/theme.css
+</tree>
+```
+
+It lists one level deep by default; `recursive=true` walks the whole subtree
+(files only), which is how you find a file whose directory you do not know. Paths
+are relative to the repository root, so they can be handed straight to
+`get_file`.
+
 Missing refs and missing paths return a clean error instead of a git stack trace,
 and a ref that does not exist suggests close matches:
 
@@ -126,8 +144,8 @@ Ref not found: "fix/PROJ-7609" in group/sub/repo. Did you mean:
 ```
 
 Binary files are refused. File output is capped (default 200 KB, override with
-`max_bytes`); ref listings are capped too (default 200, override with
-`max_refs`) and say when they were cut short.
+`max_bytes`); ref listings and tree listings are capped too (default 200, override
+with `max_refs` and `max_entries` respectively) and say when they were cut short.
 
 ## Freshness
 
@@ -215,6 +233,7 @@ test/
   fixture.ts            builds the throwaway "GitLab"
   store.test.ts         mirror resolution, guards, freshness
   refs.test.ts          ref listing, resolution, close matches
+  tree.test.ts          directory listings, the ls-tree parser, rendering
   protocol.test.ts      the MCP surface over an in-memory transport
   startup.test.ts       the compiled entry point over real stdio
 tsconfig.json           typecheck: src/ + test/, no emit
@@ -226,8 +245,8 @@ tsconfig.build.json     emit: src/ only → dist/
 - **Phase 1 (done):** stdio server + `get_file`.
 - **Phase 2a (done):** freshness — TTL, fetch-on-miss, per-project fetch lock,
   `synced_at` provenance.
-- **Phase 2b:** `list_refs` and `resolve_ref` (done, plus close-match hints);
-  `list_tree` next.
+- **Phase 2b (done):** `list_refs`, `resolve_ref` (both with close-match hints)
+  and `list_tree`.
 - **Phase 2c:** repo registry (`add_repo`/`list_repos`/`sync_repo`), prefer local
   clones, `manual` freshness mode.
 - **Phase 3:** `compare`, `diff_file`, `log`, `get_commit`, `blame`.

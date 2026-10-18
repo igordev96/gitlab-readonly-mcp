@@ -28,8 +28,9 @@ export function createServer(config: Config, store: RepoStore): McpServer {
       instructions:
         "Read-only access to a self-managed GitLab through local git mirrors. " +
         "Use `list_refs` to discover branches and tags, `resolve_ref` to turn a name " +
-        "into a commit, and `get_file` to read a file — all without changing any " +
-        "working tree. Repositories are mirrored on first use.",
+        "into a commit, `list_tree` to browse a directory, and `get_file` to read a " +
+        "file — all without changing any working tree. Repositories are mirrored on " +
+        "first use.",
     },
   );
 

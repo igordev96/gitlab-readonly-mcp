@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { Config } from "./config.js";
-import { Git, GitError } from "./git.js";
+import { Git, GitError, type GitRunResult } from "./git.js";
 
 const PROJECT_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 export const DEFAULT_FILE_MAX_BYTES = 200_000;
@@ -19,6 +19,8 @@ const REF_FORMAT =
   "%(refname)%00%(objectname)%00%(*objectname)%00" +
   "%(committerdate:iso-strict)%00%(*committerdate:iso-strict)%00%(subject)";
 const REF_MAX_BYTES = 4 * 1024 * 1024;
+/** Byte cap for a tree listing; the entry cap usually bites first. */
+const TREE_MAX_BYTES = 8 * 1024 * 1024;
 
 /** Thrown when a ref or file path does not exist (as opposed to a hard failure). */
 export class NotFoundError extends Error {
@@ -67,6 +69,43 @@ export interface ListRefsOptions {
   /** Case-insensitive substring of the short ref name. */
   search?: string;
   maxEntries?: number;
+}
+
+/** One entry in a tree listing: a file, or a directory. */
+export interface TreeEntry {
+  /** Path relative to the repository root, e.g. `src/components/Button.tsx`. */
+  path: string;
+  /** `blob` for a file, `tree` for a directory. */
+  type: string;
+  /** Octal mode, e.g. `100644` or `040000`. */
+  mode: string;
+  /** Git object id. */
+  object: string;
+  /** Size in bytes, present for blobs only. */
+  size?: number;
+}
+
+export interface ListTreeOptions {
+  /** Walk the whole subtree instead of just the immediate children. */
+  recursive?: boolean;
+  maxEntries?: number;
+}
+
+export interface TreeListResult {
+  project: string;
+  ref: string;
+  commit: string;
+  /** Directory that was listed; empty string for the repository root. */
+  path: string;
+  recursive: boolean;
+  entries: TreeEntry[];
+  /** Number of entries before the cap was applied. */
+  total: number;
+  truncated: boolean;
+  /** When the mirror backing this listing was last synchronised, if known. */
+  syncedAt?: Date;
+  /** True when this listing triggered a fetch. */
+  fetched: boolean;
 }
 
 export interface RefListResult {
@@ -227,6 +266,41 @@ function patternsFor(kind: RefKindFilter): string[] {
     return ["refs/tags"];
   }
   return ["refs/heads", "refs/tags"];
+}
+
+/**
+ * Parse `git ls-tree -l -z` output.
+ *
+ * Each record is `<mode> SP <type> SP <object> SP <size> TAB <path>`, with the
+ * size column space-padded, and records are NUL-terminated. Splitting on `-z`
+ * rather than newlines means a path containing a newline cannot forge a second
+ * entry; the path may itself contain a tab, so the separator is the *first* tab.
+ */
+export function parseTreeEntries(output: string): TreeEntry[] {
+  const entries: TreeEntry[] = [];
+  for (const record of output.split("\u0000")) {
+    if (!record) {
+      continue;
+    }
+    const separator = record.indexOf("\t");
+    if (separator === -1) {
+      continue;
+    }
+    const [mode, type, object, rawSize] = record.slice(0, separator).trim().split(/\s+/);
+    const entryPath = record.slice(separator + 1);
+    if (!mode || !type || !object || !entryPath) {
+      continue;
+    }
+    const size = rawSize && rawSize !== "-" ? Number(rawSize) : Number.NaN;
+    entries.push({
+      path: entryPath,
+      type,
+      mode,
+      object,
+      size: Number.isFinite(size) ? size : undefined,
+    });
+  }
+  return entries;
 }
 
 /** A "did you mean" message for an unresolvable ref, with suggestions if any. */export function formatRefNotFound(
@@ -405,6 +479,96 @@ export class RepoStore {
     await this.refresh(cleanProject, dir, "ttl");
     const refs = await this.rawRefs(dir, ["refs/heads", "refs/tags"]);
     return rankSimilar(refs, cleanRef, limit);
+  }
+
+  /**
+   * List a directory at a ref: `ls-tree`, one level deep by default.
+   *
+   * `-l` adds blob sizes, so a caller can judge whether a file is worth reading
+   * before fetching it. Paths are returned relative to the repository root, so
+   * they compose directly with `get_file`.
+   */
+  async listTree(
+    project: string,
+    ref: string,
+    dirPath = "",
+    options: ListTreeOptions = {},
+  ): Promise<TreeListResult> {
+    const cleanProject = validateProject(project);
+    const cleanRef = validateRef(ref);
+    // `validateRepoPath` strips leading slashes; a listing also has to tolerate
+    // a trailing one, or joining the prefix below would double it up.
+    const cleanPath = dirPath.trim() ? validateRepoPath(dirPath).replace(/\/+$/, "") : "";
+    const recursive = options.recursive ?? false;
+
+    const { dir, commit, fetched } = await this.resolveWithFreshness(cleanProject, cleanRef);
+    if (!commit) {
+      throw new NotFoundError(await this.notFoundRefMessage(cleanProject, cleanRef));
+    }
+
+    // `commit:path` names the directory itself, so its *contents* are listed.
+    // `commit -- path` would name the tree entry instead.
+    const target = cleanPath ? `${commit}:${cleanPath}` : commit;
+    const args = ["ls-tree", "-l", "-z"];
+    if (recursive) {
+      args.push("-r");
+    }
+    args.push(target);
+
+    const listed = await this.git.run(args, { gitDir: dir, maxBytes: TREE_MAX_BYTES });
+    if (listed.code !== 0) {
+      throw this.treeFailure(cleanProject, cleanRef, cleanPath, listed);
+    }
+
+    // `ls-tree <commit>:<dir>` reports paths relative to `<dir>` — `index.tsx`,
+    // not `src/index.tsx`. Callers need root-relative paths, so re-root them.
+    const prefix = cleanPath ? `${cleanPath}/` : "";
+    const all = parseTreeEntries(listed.stdout).map((entry) => ({
+      ...entry,
+      path: `${prefix}${entry.path}`,
+    }));
+    const limit = Math.min(options.maxEntries ?? DEFAULT_MAX_ENTRIES, HARD_MAX_ENTRIES);
+    const syncMs = await this.lastSyncAt(cleanProject, dir);
+
+    return {
+      project: cleanProject,
+      ref: cleanRef,
+      commit,
+      path: cleanPath,
+      recursive,
+      entries: all.slice(0, limit),
+      total: all.length,
+      // A byte-capped listing can also be short, so treat both as truncation.
+      truncated: all.length > limit || listed.truncated,
+      syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
+      fetched,
+    };
+  }
+
+  /**
+   * Turn an `ls-tree` failure into a clean error. Listing a *file* is a common
+   * mistake worth naming, because git's "not a tree object" never says which
+   * tool the caller actually wanted.
+   */
+  private treeFailure(
+    project: string,
+    ref: string,
+    dirPath: string,
+    result: GitRunResult,
+  ): Error {
+    if (/not a tree object/i.test(result.stderr)) {
+      return new NotFoundError(
+        `"${dirPath}" is a file at "${ref}" in ${project}, not a directory. Use get_file to read it.`,
+      );
+    }
+    if (/not a valid object name|does not exist|invalid object name/i.test(result.stderr)) {
+      return new NotFoundError(`Path not found: "${dirPath}" at "${ref}" in ${project}.`);
+    }
+    return new GitError(
+      `Failed to list "${dirPath || "/"}" at "${ref}" in ${project}.`,
+      result.code,
+      this.redact(result.stderr).trim(),
+    );
   }
 
   /** Read a file at a ref, without touching any working tree. */

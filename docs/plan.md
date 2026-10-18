@@ -8,8 +8,9 @@
 > runbook — lives in [`history.md`](history.md). Keep the two apart: this file
 > should not grow as phases land.
 
-Status: phases 0, 1 and 2a complete; **2b-1 complete**, tagged `v0.3.0`.
-Next: **2b-2** (`list_tree`). Detail behind the tags: `history.md`.
+Status: phases 0, 1, 2a and 2b-1 complete; newest tag `v0.3.0` (`list_refs`,
+`resolve_ref`). **2b-2** (`list_tree`) is implemented, awaiting its commit and
+tag. Detail behind the tags: `history.md`.
 Owner: igordev96
 Author: OpenCode
 
@@ -178,7 +179,8 @@ Tool names are exposed by OpenCode as `gitlab_<tool>`.
 
 **Reads (core)**
 - `get_file(project, ref, path)` — `git show <ref>:<path>`. ✅
-- `list_tree(project, ref, path, recursive?, max_entries?)` — `git ls-tree`.
+- `list_tree(project, ref, path?, recursive?, max_entries?)` — `git ls-tree -l -z`,
+  one level deep by default, paths relative to the repository root. ✅
 - `list_refs(project, kind=branches|tags|all, search?, max_refs?)` — `git for-each-ref`,
   scoped to `refs/heads` + `refs/tags`. ✅
 - `resolve_ref(project, ref)` — sha existence + close matches. ✅
@@ -266,9 +268,9 @@ truncation flag when output is capped.
 | 3 | Diff & history: `compare`, `diff_file`, `log`, `get_commit`, `blame` | "What changed between `develop` and `fix/PROJ-7608`?" works |
 | 4 | Polish: `search`, `pickaxe`, URL parser, truncation, caching, stale-visibility | Freshness provenance visible on every read |
 
-> **Status:** phases 0, 1 and 2a complete; 2b-1 complete as `v0.3.0`. Next is
-> 2b-2 (`list_tree`), then 2c–4. The per-phase detail behind each tag, and the
-> findings that produced it, are in [`history.md`](history.md).
+> **Status:** phases 0, 1, 2a and 2b-1 complete, 2b-1 being `v0.3.0`. 2b-2
+> (`list_tree`) is implemented and awaiting its commit and tag. Next is 2c (repo
+> registry), then 3–4. Per-phase detail: [`history.md`](history.md).
 
 ### Source layout
 
@@ -283,13 +285,14 @@ src/
   url.ts         # GitLab web URL -> {project, ref, path}      (Phase 4)
   tools/
     result.ts      # shared tool result shapes and error rendering
-    files.ts       # get_file
+    files.ts       # get_file, list_tree                            ✅ Phase 2b-2
     refs.ts        # list_refs, resolve_ref                        ✅ Phase 2b-1
     repos.ts  history.ts  search.ts                                (later phases)
 test/
   fixture.ts     # builds a throwaway "GitLab" (working repo + bare server)
   store.test.ts  # mirror resolution, guards, freshness
   refs.test.ts   # ref listing, resolution, close matches
+  tree.test.ts   # directory listings, the ls-tree parser, rendering
   git.test.ts    # the git wrapper
   gitDiagnostics.test.ts  # git stderr -> actionable hint
   protocol.test.ts   # the MCP surface over an in-memory transport

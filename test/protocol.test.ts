@@ -59,9 +59,12 @@ describe("MCP protocol", () => {
     await client?.close();
   });
 
-  it("exposes get_file", async () => {
+  it("exposes get_file and list_tree", async () => {
     const { tools } = await client.listTools();
-    assert.ok(tools.some((tool) => tool.name === "get_file"), "get_file is missing");
+    const names = tools.map((tool) => tool.name);
+    for (const expected of ["get_file", "list_tree"]) {
+      assert.ok(names.includes(expected), `${expected} is missing; saw ${names.join(", ")}`);
+    }
   });
 
   it("exposes list_refs and resolve_ref", async () => {
@@ -163,6 +166,46 @@ describe("MCP protocol", () => {
       arguments: { project: "demo", ref: "main", path: "src/index.tsx", max_bytes: 5 },
     });
     assert.match(textOf(response), /truncated/);
+  });
+
+  it("lists a directory without reading any file", async () => {
+    const response = await client.callTool({
+      name: "list_tree",
+      arguments: { project: "demo", ref: "fix/TEST-1", path: "src" },
+    });
+    const text = textOf(response);
+    assert.match(text, /^<tree /);
+    assert.match(text, /project="demo"/);
+    assert.match(text, /ref="fix\/TEST-1"/);
+    assert.match(text, /path="src"/);
+    assert.match(text, /commit="[0-9a-f]{40}"/);
+    assert.match(text, /synced_at="\d{4}-\d{2}-\d{2}T/);
+    assert.match(text, /^tree\t-\tsrc\/components$/m);
+    assert.match(text, /^blob\t\d+\tsrc\/index\.tsx$/m);
+    assert.match(text, /<\/tree>$/);
+  });
+
+  it("walks a subtree recursively", async () => {
+    const response = await client.callTool({
+      name: "list_tree",
+      arguments: { project: "demo", ref: "fix/TEST-1", recursive: true },
+    });
+    const text = textOf(response);
+    assert.match(text, /recursive="true"/);
+    assert.match(text, /^blob\t\d+\tdocs\/readme\.md$/m);
+    assert.match(text, /^blob\t\d+\tsrc\/components\/Button\.tsx$/m);
+  });
+
+  it("points at get_file when asked to list a file", async () => {
+    const response = (await client.callTool({
+      name: "list_tree",
+      arguments: { project: "demo", ref: "main", path: "src/index.tsx" },
+    })) as unknown as TextResult;
+
+    assert.equal(response.isError, true);
+    const text = textOf(response);
+    assert.match(text, /is a file/);
+    assert.match(text, /get_file/);
   });
 
   it("hands the agent git's own words when a clone fails", async () => {

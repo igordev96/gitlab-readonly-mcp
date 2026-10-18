@@ -1,11 +1,45 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Config } from "../config.js";
-import { NotFoundError, type RepoStore } from "../repoStore.js";
+import {
+  DEFAULT_MAX_ENTRIES,
+  HARD_MAX_ENTRIES,
+  NotFoundError,
+  type RepoStore,
+  type TreeListResult,
+} from "../repoStore.js";
 import { NO_PROJECT, errorResult, failureMessage, textResult } from "./result.js";
 
 const DEFAULT_MAX_BYTES = 200_000;
 const HARD_MAX_BYTES = 20_000_000;
+
+/** Render a tree listing: a provenance header, then one tab-separated row per entry. */
+export function formatTree(result: TreeListResult): string {
+  const attributes = [
+    `project="${result.project}"`,
+    `ref="${result.ref}"`,
+    `commit="${result.commit}"`,
+    `path="${result.path || "/"}"`,
+    result.recursive ? 'recursive="true"' : undefined,
+    `count="${result.entries.length}"`,
+    result.total !== result.entries.length ? `total="${result.total}"` : undefined,
+    result.syncedAt ? `synced_at="${result.syncedAt.toISOString()}"` : undefined,
+    result.truncated ? 'truncated="true"' : undefined,
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join(" ");
+
+  const rows = result.entries.map((entry) =>
+    [entry.type, entry.size === undefined ? "-" : String(entry.size), entry.path].join("\t"),
+  );
+
+  const body = rows.length > 0 ? rows.join("\n") : "(empty)";
+  const footer = result.truncated
+    ? `\n[truncated: showing ${result.entries.length} of ${result.total} entries]`
+    : "";
+
+  return `<tree ${attributes}>\n${body}${footer}\n</tree>`;
+}
 
 export function registerFileTools(server: McpServer, store: RepoStore, config: Config): void {
   server.registerTool(
@@ -77,6 +111,70 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
           return errorResult(error.message);
         }
         return errorResult(`Failed to read "${filePath}" at "${ref}".\n${failureMessage(error)}`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "list_tree",
+    {
+      title: "List a directory at a ref",
+      description:
+        "List the files and subdirectories at a given ref, one level deep by default; set " +
+        "`recursive` to walk the whole subtree. Files carry their size in bytes, so you can " +
+        "tell a small config from a bundle before reading it. Names are full paths relative to " +
+        "the repository root. Everything comes from git, so no file is fetched to answer this.",
+      inputSchema: {
+        ref: z
+          .string()
+          .describe("Branch, tag, or commit SHA, e.g. 'develop' or 'fix/PROJ-7608'."),
+        path: z
+          .string()
+          .optional()
+          .describe(
+            "Directory inside the repository, forward slashes, e.g. 'src'. Defaults to the repository root.",
+          ),
+        recursive: z
+          .boolean()
+          .optional()
+          .describe(
+            "List every file in the subtree instead of just the immediate children (files only).",
+          ),
+        project: z
+          .string()
+          .optional()
+          .describe(
+            "GitLab project path, e.g. 'group/subgroup/repo'. Defaults to GITLAB_DEFAULT_PROJECT.",
+          ),
+        max_entries: z
+          .number()
+          .int()
+          .positive()
+          .max(HARD_MAX_ENTRIES)
+          .optional()
+          .describe(`Maximum entries to return (default ${DEFAULT_MAX_ENTRIES}).`),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ ref, path: dirPath, recursive, project, max_entries }) => {
+      const target = project?.trim() || config.defaultProject;
+      if (!target) {
+        return errorResult(NO_PROJECT);
+      }
+
+      try {
+        const result = await store.listTree(target, ref, dirPath ?? "", {
+          recursive,
+          maxEntries: max_entries,
+        });
+        return textResult(formatTree(result));
+      } catch (error) {
+        if (error instanceof NotFoundError) {
+          return errorResult(error.message);
+        }
+        return errorResult(
+          `Failed to list "${dirPath || "/"}" at "${ref}".\n${failureMessage(error)}`,
+        );
       }
     },
   );

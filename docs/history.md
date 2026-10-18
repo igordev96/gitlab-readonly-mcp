@@ -69,6 +69,9 @@ Running record of things learned while building. Keep appending.
 | 2026-10-18 | `SERVER_VERSION` was a hand-maintained literal in `src/server.ts` and had silently drifted: the server reported `0.1.0` while the newest tag was `v0.2.1`. | Version is now read from `package.json`, whose bump and the tag are the same step (`npm version`), so drift is impossible. `test/startup.test.ts` asserts the compiled server reports exactly `package.json`'s version. |
 | 2026-10-18 | **Phase 2b-1 complete and tagged `v0.3.0`.** `list_refs`, `resolve_ref` and the close-match hints implemented; suite grew from 38 tests / 8 suites to 60 / 11. | Exit criterion met: an agent can find a branch, confirm its commit, and read a file, all without cloning. Tag is annotated and points at the release commit, whose `package.json` says `0.3.0`. |
 | 2026-10-18 | The plan had become 39% history: 132 lines of completed Phase 0 runbook plus 110 lines of findings and per-phase artifacts, growing with every phase, so that a reader looking for the tool surface had to scroll past a pile of dated entries. | Split by tense: `plan.md` describes what will be and what is; `history.md` (this file) accumulates what happened. Recorded as a convention in `AGENTS.md`, because otherwise the two quietly re-converge. |
+| 2026-10-18 | `git ls-tree <commit>:<dir>` reports paths **relative to `<dir>`** — listing `src` yields `index.tsx`, not `src/index.tsx`. A test asserting full paths failed and caught it; the manual probe that "confirmed" the format had been read carelessly. | `listTree` re-roots every entry through the listed directory, so paths compose directly with `get_file`'s `path`. A trailing slash is stripped first, or the prefix would double it up. |
+| 2026-10-18 | `ls-tree` exits 128 for both a missing path (`fatal: Not a valid object name`) and a file where a directory was expected (`fatal: not a tree object`). | `treeFailure` turns them into distinct not-found messages, and the second points at `get_file` — git's own wording never says which tool the caller actually wanted. |
+| 2026-10-18 | `ls-tree -l` right-aligns the size column with leading spaces and prints `-` for a tree, so splitting the header on a single space yields empty fields; and splitting the listing on newlines would let a path containing a newline forge a second entry. | The listing is read with `-z` and parsed as NUL-terminated records, header split with `trim().split(/\s+/)`. Both verified against real output rather than assumed, and both covered by parser tests. |
 
 ---
 
@@ -76,6 +79,22 @@ Running record of things learned while building. Keep appending.
 
 What each phase actually touched. The plan keeps only the design; this is the
 blow-by-blow.
+
+### Phase 2b-2 artifacts
+
+- `src/repoStore.ts` — `listTree` (`ls-tree -l -z`, one level deep by default,
+  `-r` when recursive), the exported `parseTreeEntries` parser, and
+  `treeFailure`, which maps git's two failure modes onto not-found errors. Paths
+  are re-rooted to the repository root; `TreeEntry`/`TreeListResult` describe the
+  shape.
+- `src/tools/files.ts` — the `list_tree` tool, alongside `get_file`, with an
+  exported `formatTree` so the rendering is testable on its own.
+- `src/server.ts` — the server instructions now name `list_tree` in the read
+  path (`list_refs` → `resolve_ref` → `list_tree` → `get_file`).
+- `test/tree.test.ts` — new: store-level listings, the parser and the renderer.
+  `test/protocol.test.ts` extended with the tool as a client sees it.
+- No new config, no new environment variable, no new dependency. Suite: 79 tests
+  / 14 suites (was 60 / 11).
 
 ### Phase 2b-1 artifacts
 
