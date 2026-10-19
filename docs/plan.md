@@ -8,18 +8,18 @@
 > runbook — lives in [`history.md`](history.md). Keep the two apart: this file
 > should not grow as phases land.
 
-Status: phases 0, 1, 2a, 2b, 2c-1 and 2c-2 complete; newest tag `v0.7.0` (local
-clones). Eight tools are implemented: the four reads — exercised against the real
-GitLab on the success path and on a deliberately broken token — plus `list_repos`,
-`add_repo`, `remove_repo` and `sync_repo`. A project registers itself the first
-time it is used, or explicitly with `add_repo`, and its registry entry decides
-where it is read from: a mirror the server keeps fresh, or a clone of your own,
-which is read, never cloned, and fetched only when a ref is missing from it. Its
-policy (`repos.json`) can include `manual`, which makes no network call that
-`sync_repo` did not ask for, while its age always comes from the source's own
-sync stamp and never from the registry. Search (`git grep`) and pickaxe
-(`git log -S`) are next, in 4a (§4). The token is supplied by OpenCode's
-config (`~/.config/opencode/opencode.jsonc`), not by the shell. See `history.md`.
+Status: phases 0, 1, 2a, 2b, 2c-1, 2c-2 and 4a complete; newest tag `v0.8.0`
+(search and pickaxe). Ten tools are implemented: the four reads — exercised
+against the real GitLab on the success path and on a deliberately broken token —
+`search` and `pickaxe`, plus `list_repos`, `add_repo`, `remove_repo` and
+`sync_repo`. A project registers itself the first time it is used, or explicitly
+with `add_repo`, and its registry entry decides where it is read from: a mirror
+the server keeps fresh, or a clone of your own, which is read, never cloned, and
+fetched only when a ref is missing from it. Its policy (`repos.json`) can include
+`manual`, which makes no network call that `sync_repo` did not ask for, while its
+age always comes from the source's own sync stamp and never from the registry.
+The token is supplied by OpenCode's config (`~/.config/opencode/opencode.jsonc`),
+not by the shell. See `history.md`.
 Owner: igordev96
 Author: OpenCode
 
@@ -40,7 +40,7 @@ Secondary use cases (selected):
 
 - Compare two branches / refs (what changed on `fix/PROJ-7608` vs `develop`).
 - Commit history and blame for a file or branch.
-- Bonus (free with git): repo-wide code search and pickaxe.
+- Bonus (free with git): repo-wide code search and pickaxe — **done in 4a**.
 
 Backend decision: **git only** (no GitLab REST API), because the selected
 features (diff + history/blame + search) are git's strengths and the REST API's
@@ -290,13 +290,13 @@ Tool names are exposed by OpenCode as `gitlab_<tool>`.
 - `get_commit(project, sha)`.
 - `blame(project, path, ref, lines?)`.
 
-**Search**
+**Search** — implemented in 4a, `v0.8.0`.
 - `search(project, query, ref?, path?, case_sensitive?, regex?, max_matches?)` —
   `git grep` over the tree of one ref, matches grouped by file as
   `path:line: text`, with the same `commit` / `synced_at` provenance as
-  `get_file`. (4a)
-- `pickaxe(project, query, ref?, path?, limit?)` — `git log -S`: "when was this
-  text introduced or removed?", one commit per line. (4a)
+  `get_file`. ✅
+- `pickaxe(project, query, ref?, path?, case_sensitive?, limit?)` — `git log -S`:
+  "when was this text introduced or removed?", one commit per line. ✅
 
 `search` design decisions (mechanics verified with git 2.53, 2026-10-18):
 
@@ -421,9 +421,9 @@ truncation flag when output is capped.
 | 4a | Search: `search` (`git grep`) and `pickaxe` (`git log -S`) | "Where is this used on `fix/PROJ-7608`, and when did it appear?" answered without a clone |
 | 4b | Polish: `parse_gitlab_url`, function context for `search`, `files`/`count` output modes, blobless clones, truncation and stale-visibility review | Every read states its provenance; a GitLab file URL can be handed straight to `get_file` |
 
-> **Status:** phases 0, 1, 2a, 2b, 2c-1 and 2c-2 complete; 2c-2 is `v0.7.0`.
-> 4a (search) comes next, ahead of phase 3, because the search tools are wanted
-> first. Per-phase detail: [`history.md`](history.md).
+> **Status:** phases 0, 1, 2a, 2b, 2c-1, 2c-2 and 4a complete. The newest tag is
+> `v0.8.0` (4a: search and pickaxe). Phase 3 (diff and history) is next; 4b
+> collects the polish. Per-phase detail: [`history.md`](history.md).
 
 ### Source layout
 
@@ -443,7 +443,8 @@ src/
     files.ts       # get_file, list_tree                            ✅ Phase 2b-2
     refs.ts        # list_refs, resolve_ref                        ✅ Phase 2b-1
     repos.ts       # list_repos, sync_repo, add_repo, remove_repo   ✅ Phase 2c-1/2c-2
-    history.ts  search.ts  pickaxe.ts                             (4a, 3)
+    history.ts                                                    (Phase 3)
+    search.ts      # search (git grep), pickaxe (git log -S)        ✅ Phase 4a
 test/
   fixture.ts     # builds a throwaway "GitLab" (working repo + bare server)
   store.test.ts  # source resolution, guards, freshness, project policy
@@ -451,6 +452,7 @@ test/
   local.test.ts  # local-clone sources: reading, misses, path and delete guards
   refs.test.ts   # ref listing, resolution, close matches
   tree.test.ts   # directory listings, the ls-tree parser, rendering
+  search.test.ts # grep and log -S: parsers, rendering, fixture reads
   repos.test.ts  # rendering the registry listing
   git.test.ts    # the git wrapper
   gitDiagnostics.test.ts  # git stderr -> actionable hint

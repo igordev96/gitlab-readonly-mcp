@@ -7,12 +7,12 @@ branches that are not checked out locally — without ever touching your working
 tree. Content comes from a local bare mirror the server keeps in a cache
 directory, or from a clone of your own when you register one.
 
-> Phase 2c-2 implementation. Exposes `get_file`, `list_tree`, `list_refs`,
-> `resolve_ref`, plus `list_repos`, `add_repo`, `remove_repo` and `sync_repo` for
-> choosing and controlling where a project is read from. A project is read from a
-> bare mirror that keeps itself fresh (TTL + fetch-on-miss), or from a clone of
-> your own, which is read in place and fetched only when a ref it does not have
-> is asked for. See the plan at [`docs/plan.md`](docs/plan.md) — the canonical,
+> Phase 4a implementation. Exposes `get_file`, `list_tree`, `list_refs`,
+> `resolve_ref`, `search` and `pickaxe`, plus `list_repos`, `add_repo`,
+> `remove_repo` and `sync_repo` for choosing and controlling where a project is
+> read from. A project is read from a bare mirror that keeps itself fresh
+> (TTL + fetch-on-miss), or from a clone of your own, which is read in place and
+> fetched only when a ref it does not have is asked for. See the plan at [`docs/plan.md`](docs/plan.md) — the canonical,
 > in-repo design document — and [`docs/history.md`](docs/history.md) for
 > milestones, findings and per-phase artifacts.
 
@@ -89,8 +89,8 @@ Use the **absolute** path to `dist/index.js`: a global MCP server's working
 directory is the workspace it is launched from, not this project.
 
 The tools appear as `gitlab_get_file`, `gitlab_list_tree`, `gitlab_list_refs`,
-`gitlab_resolve_ref`, `gitlab_list_repos`, `gitlab_add_repo`,
-`gitlab_remove_repo` and `gitlab_sync_repo`.
+`gitlab_resolve_ref`, `gitlab_search`, `gitlab_pickaxe`, `gitlab_list_repos`,
+`gitlab_add_repo`, `gitlab_remove_repo` and `gitlab_sync_repo`.
 
 ## Usage
 
@@ -102,14 +102,18 @@ gitlab_list_refs(project="group/sub/repo", kind="branches", search="PROJ")
 gitlab_resolve_ref(project="group/sub/repo", ref="fix/PROJ-7608")
 gitlab_list_tree(project="group/sub/repo", ref="fix/PROJ-7608", path="src")
 gitlab_get_file(project="group/sub/repo", ref="fix/PROJ-7608", path="src/index.tsx")
+gitlab_search(project="group/sub/repo", ref="fix/PROJ-7608", query="vehicleCount")
+gitlab_pickaxe(project="group/sub/repo", ref="fix/PROJ-7608", query="vehicleCount")
 gitlab_remove_repo(project="group/sub/repo")
 ```
 
 Start with `list_refs` to find the branch and `resolve_ref` to confirm it, use
 `list_tree` to see what is in it, then `get_file` to read a specific file. An
-agent can do all four against a repository it has never cloned. `list_repos`,
-`add_repo`, `remove_repo` and `sync_repo` are the exception: they are about the
-server's own state rather than about reading content.
+agent can do all four against a repository it has never cloned. `search` answers
+"where is this used" when you do not know the file, and `pickaxe` answers "when
+did it appear". `list_repos`, `add_repo`, `remove_repo` and `sync_repo` are the
+exception: they are about the server's own state rather than about reading
+content.
 
 Results are wrapped so provenance is always visible:
 
@@ -158,6 +162,51 @@ Ref not found: "fix/PROJ-7609" in group/sub/repo. Did you mean:
 Binary files are refused. File output is capped (default 200 KB, override with
 `max_bytes`); ref listings and tree listings are capped too (default 200, override
 with `max_refs` and `max_entries` respectively) and say when they were cut short.
+
+## Search
+
+`search` greps the whole tree of a ref — `git grep`, not a checkout — and groups
+the hits by file:
+
+```
+<search project="group/sub/repo" ref="fix/PROJ-7608" commit="abc123…" query="orderTotals" count="2" files="1" synced_at="2026-10-18T09:12:44.318Z">
+src/reports/OrderTotals.tsx
+  22: export const OrderTotalsReport = () => {
+  64:   title={translations.reporting.seeOrderTotalsPage}
+</search>
+```
+
+The ref defaults to the repository's default branch, so `search(query="…")` alone
+reads what a fresh clone would show you. It is resolved before the grep runs,
+which means a search gets the same freshness as a read — including fetch-on-miss,
+so a branch created minutes ago is found without `sync_repo`.
+
+Matching is **literal and case-insensitive**: `foo|bar` looks for that text, not
+for `foo` or `bar`, because git's default pattern dialect treats `+`, `?` and `|`
+as ordinary characters and a silent miss is worse than a visible extra match.
+Pass `regex=true` for POSIX extended regex (not PCRE), and `case_sensitive=true`
+for exact case. `path` is a git pathspec, so `src/components/*.tsx` narrows the
+search; note that a plain pathspec's `**` needs at least one directory level —
+use `:(glob)src/**/*.tsx` for zero or more.
+
+Answers are capped (`max_matches`, default 100) and the true total is reported, so
+a capped answer still tells you how big the thing is, and each long matched line
+is cut with the number of characters left out.
+
+`pickaxe` answers the follow-up — *when* did this text appear:
+
+```
+<pickaxe project="group/sub/repo" ref="fix/PROJ-7608" commit="abc123…" query="orderTotals" count="1" synced_at="2026-10-18T09:12:44.318Z">
+8297d0da2	2026-10-15	Author	PROJ-7608: inconsistent productive vehicle count
+</pickaxe>
+```
+
+It wraps `git log -S`, so it lists the commits whose diff changed **how often** the
+text appears, most recent first, one row of `commit`, `date`, `author`, `subject`.
+It walks the history of the ref and is therefore slower than `search` (seconds
+rather than milliseconds on a large repository). Like `search` it matches
+literally and case-insensitively; `case_sensitive=true` follows the text exactly,
+and `limit` (default 20) caps the walk.
 
 ## Repositories and policy
 
@@ -303,6 +352,8 @@ needed to find out what happened.
 | `[refresh failed: …]` in a result | The source could not be refreshed, so the answer came from the cache as of `synced_at`. The note says why; the causes are the same as for a failed read. |
 | *The registered clone at … is not a usable git repository* | The path recorded by `add_repo` has been moved, deleted or emptied. Run `add_repo` again with the current path, or `remove_repo` to go back to a mirror. |
 | *The registered clone at … has no remote to fetch from* | The clone has no remote configured, so a ref it does not already hold cannot be fetched. Everything it does hold still reads. |
+| `search` finds nothing, although you can see the text | Matching is literal and one argument: `foo\|bar` means that text, not `foo` or `bar` — pass `regex=true` for alternation. A `path` that matches nothing also returns no matches rather than an error, and a plain pathspec's `**` needs a directory level (`src/**/*.tsx` misses `src/index.tsx`; use `:(glob)src/**/*.tsx`). |
+| `pickaxe` lists no commits for text you can see | It reports commits whose diff *changed how many times* the text appears (`git log -S`), so text unchanged since the root commit, or brought in by a merge git does not diff, has no commit to list. Matching is literal and case-insensitive; `case_sensitive=true` follows the case exactly. |
 
 The credential case is worth one extra note: **a running MCP server keeps the
 token it started with.** Editing `GITLAB_TOKEN` does nothing to a server that is
@@ -355,6 +406,7 @@ test/
   local.test.ts         local clones: reading, misses, path and delete guards
   refs.test.ts          ref listing, resolution, close matches
   tree.test.ts          directory listings, the ls-tree parser, rendering
+  search.test.ts        grep and log -S: their parsers, rendering, fixture reads
   repos.test.ts         rendering the registry listing
   git.test.ts           the git wrapper
   gitDiagnostics.test.ts  git stderr → actionable hint
@@ -376,5 +428,8 @@ tsconfig.build.json     emit: src/ only → dist/
 - **Phase 2c-2 (done):** `add_repo`/`remove_repo`, and reading a project from a
   clone of your own — including the branches that only exist as remote-tracking
   refs there.
+- **Phase 4a (done):** `search` (`git grep` over the tree of any ref) and
+  `pickaxe` (`git log -S`: when the text appeared).
 - **Phase 3 (next):** `compare`, `diff_file`, `log`, `get_commit`, `blame`.
-- **Phase 4:** `search` (`git grep`), `pickaxe`, GitLab URL parser, polish.
+- **Phase 4b:** GitLab URL parser, match context for `search`, `files`/`count`
+  output modes, blobless clones, truncation and stale-visibility review.
