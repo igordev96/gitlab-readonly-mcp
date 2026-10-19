@@ -296,12 +296,22 @@ Tool names are exposed by OpenCode as `gitlab_<tool>`.
 - `resolve_ref(project, ref)` — sha existence + close matches. ✅
   (Named `ref` rather than the original `name`, to match `get_file`.)
 
-**Diff & history (selected extras)**
-- `compare(project, from, to, path?)` — `git diff`.
-- `diff_file(project, path, from, to)`.
-- `log(project, ref, path?, limit?)`.
-- `get_commit(project, sha)`.
-- `blame(project, path, ref, lines?)`.
+**Diff & history** — phase 3, designed below and split into 3a–3d in §7.
+- `log(project, ref?, path?, limit?, max_bytes?, url?)` — `git log`, newest
+  first, one row per commit (short sha, ISO date, author, subject); a merge
+  commit is marked. `ref` defaults to HEAD and is named in the header.
+- `get_commit(project, rev, patch?, max_bytes?, url?)` — `git show`: sha,
+  parents, author/committer with dates and the full message, then the changed
+  files with status and ± counts; `patch: true` appends the unified diff. A merge
+  commit says so rather than listing no files and looking empty.
+- `blame(project, path, ref?, lines?, max_lines?, url?)` — `git blame` in its
+  porcelain format: who last touched each line, grouped into consecutive runs,
+  with `lines` narrowing to a range (a `#L12-20` anchor).
+- `compare(project, from, to, path?, merge_base?, max_files?)` — a **summary**,
+  never a patch: per-file status and ± counts, with the merge base named.
+- `diff_file(project, path, from, to, context?, max_bytes?)` — the unified diff
+  of one file between two refs; the caller names the file, so no patch header has
+  to be parsed to find it.
 
 **Search** — implemented in 4a, `v0.8.0`.
 - `search(project, query, ref?, path?, case_sensitive?, regex?, max_matches?, output?, context?)` —
@@ -394,10 +404,11 @@ so a URL can go to a read instead of being decoded by hand; `get_file` and
 
 - **Shapes.** `/-/blob/<ref>/<path>` and `/-/raw/<ref>/<path>` name a file;
   `/-/tree/<ref>` and `/-/tree/<ref>/<path>` name a directory;
-  `/-/blame/<ref>/<path>` names a file (blame itself is phase 3).
-  `/-/commit/<sha>`, `/-/commits/<ref>[/<path>]` and `/-/merge_requests/<iid>` are
-  recognised and refused by name: they are not a file or a directory, and guessing
-  would read something the link did not point at.
+  `/-/blame/<ref>/<path>` names a file, and from 3d a blame link is read as a
+  blame. `/-/commit/<sha>` and `/-/commits/<ref>[/<path>]` are likewise handed to
+  `get_commit` and `log` from 3d. Merge requests, issues and the rest stay
+  recognised and refused by name: they are not version-control objects, and
+  guessing would read something the link did not point at.
 - **The project** is everything before the first `/-/`; a trailing `.git`, a
   trailing slash, `?query` and `#fragment` are stripped. **The host must equal
   `GITLAB_HOST`** (scheme and case ignored): a link to another instance is refused
@@ -420,6 +431,81 @@ so a URL can go to a read instead of being decoded by hand; `get_file` and
   than the network; resolving the ref is a store concern, because only the store
   knows the refs.
 - Optional configured **default project** so agents can omit it.
+
+`compare`, `diff_file`, `log`, `get_commit` and `blame` design (phase 3,
+mechanics measured with git 2.53 on 2026-10-19):
+
+- **`compare` is three-dot by default.** `git diff <merge-base(from,to)> <to>`
+  answers "what changed on `to` since it split from `from`", which is the question
+  a branch comparison actually asks; the base comes from `git merge-base` and is
+  printed as `merge_base=<sha>`, so which diff ran is never hidden.
+  `merge_base=false` asks for the raw two-dot diff (`git diff from to`) — "what
+  would applying this do". Both refs are resolved to commits first and both shas
+  are printed.
+- **A summary, never a patch.** A branch diff is unbounded — thousands of files
+  and megabytes of patch — so a tool answer that silently truncates to the byte
+  cap is worse than a summary that says it was capped. `compare` prints per-file
+  status and ± counts (`M`, `A`, `D`, `R091 old -> new`), capped by `max_files`
+  (default 100, hard 1000) with a footer; `diff_file` is how one file's patch is
+  read.
+- **Status and counts need two commands, because the flags do not combine.**
+  Measured: `git diff --numstat --name-status` prints only the name-status section
+  (the last flag wins), so the file list costs two passes over the same diff —
+  `--name-status -z -M` for status and rename pairs, `--numstat -z -M` for counts,
+  zipped by path. `--numstat -z` has a trap of its own: a rename record is
+  `add\tdel\t\0old\0new\0`, with an **empty** path field and the two names after
+  it, so a parser that assumes three fields reads the old name as the path.
+- **Renames are always asked for** (`-M`), so detection does not depend on the
+  user's `diff.renames`. Measured: the same rename is `R091\0big.txt\0big2.txt\0`
+  in `--name-status -z` and `1\t1\t\0big.txt\0big2.txt\0` in `--numstat -z`, and
+  `-M` still finds it with `diff.renames=false`. **A pathspec narrows rename
+  detection with it**: `-- big2.txt` (the new name only) reports 20 additions
+  instead of the rename, and `-- big.txt` reports 20 deletions. That is git's
+  behaviour; the tool description says so rather than pretending otherwise.
+- **`-z` also means raw paths.** It disables path quoting, so a non-ASCII path
+  arrives as UTF-8 bytes rather than as escapes, and a path containing a newline
+  survives — the same reason `search` parses NULs.
+- **`diff_file` never parses the patch to find the path.** The caller names the
+  file, so `git diff -M <from> <to> -- <path>` is scoped before it runs, and a
+  path containing a newline cannot forge a `diff --git` header it was never asked
+  about. Context is `-U<N>` (default 3, 0–10), output is capped like `get_file`,
+  and a binary file is refused with the same wording — git prints only a
+  "Binary files … differ" line, which is not a patch.
+- **`log` walks one ref and shows commits, not diffs.** One row per commit, newest
+  first: short sha, ISO date, author, subject, `(merge)` for a commit with more
+  than one parent. `limit` defaults to 20 (hard 200). There is no cheap total, so
+  a capped answer says "showing the most recent N" rather than inventing one — the
+  rule `pickaxe` already follows. `path` is a git pathspec, so history stops at a
+  rename (no `--follow`: it accepts exactly one path and walks renames backwards,
+  so its rows can name paths the ref no longer has — recorded as a limit, not a
+  feature).
+- **`get_commit` is metadata first.** `git show --format=…` for sha, parents,
+  author/committer with dates and the full message, then the same two-pass
+  status/count file list as `compare`; `patch: true` appends `git show`'s own
+  `--patch` output under the byte cap. A **merge commit** reports `merge="true"`,
+  its parents, and a note pointing at `compare <parent> <sha>` instead of a file
+  list: git shows no diff for a merge by default, and an empty list without that
+  sentence reads as "this commit changed nothing". The parameter is `rev` rather
+  than `sha` because an abbreviated sha, a full sha and a ref name are all useful,
+  and the header prints both what was asked for and the resolved full sha.
+- **`blame` groups by commit.** `git blame --porcelain` emits a full metadata
+  block once per commit and only `<sha> <orig> <final> [<count>]` for the lines
+  that follow it, so the parser caches metadata per sha and merges consecutive
+  lines into one row with a range (measured: a 3-line file from one commit is one
+  block with a group size of 3, then two bare headers; a 1-line group has a size
+  of 1). Rows print short sha, author, date, the line range, then the lines
+  themselves; `lines` narrows the blame (`-L from,to`, from a `#L12-20` anchor)
+  and `max_lines` (default 500, hard 5000) caps the rows with a footer. `boundary`
+  (the root commit) and `previous <sha> <path>` (a moved line) are read but not
+  printed yet. Blame on a **binary** file succeeds in git and yields lines
+  containing NUL bytes (measured, exit 0), so `blame` refuses binaries up front
+  with the same wording as `get_file` instead of emitting control bytes.
+- **Provenance, as everywhere else.** All five resolve their refs through the same
+  store path, so they inherit fetch-on-miss, carry `commit` (the resolved sha, or
+  both shas and the merge base for a comparison) and `synced_at`, and report
+  `refresh_failed="true"` instead of failing when a refresh fails. `compare`
+  resolves the source once and then each ref through the existing miss rule, so
+  two refs missing from the source can cost two fetches, not one re-plan.
 
 Every read result includes: `commit_sha`, `synced_at`, and for text files a
 truncation flag when output is capped.
@@ -496,13 +582,18 @@ found, and a code change only where a check fails.
 | 2b-2 | `list_tree` | Agent can browse a tree it never cloned |
 | 2c-1 | Registry: `list_repos`, `sync_repo`, per-project policy, `manual` mode | The registry reports every project in use and its true age; a `manual` project is refreshed only by `sync_repo` |
 | 2c-2 | Local clones: `add_repo`, `remove_repo`, mirror+local resolution | A registered clone answers reads with no mirror created for it, fetches only what it lacks, and nothing falls back silently |
-| 3 | Diff & history: `compare`, `diff_file`, `log`, `get_commit`, `blame` | "What changed between `develop` and `fix/PROJ-7608`?" works |
+| 3a | History: `log`, `get_commit` | "What happened on this branch, and what did that commit touch?" answered without a clone, and a merge commit says so rather than looking empty |
+| 3b | `blame` | "Who last touched lines 118–126 of this file, and when?" answered at any ref, including a range taken from a link |
+| 3c | Diffs: `compare`, `diff_file` | "What changed between `develop` and `fix/PROJ-7608`?" answered as a capped summary with rename status, and one file's patch readable under a byte cap |
+| 3d | Links and release: `/-/commit/`, `/-/commits/` and `/-/blame/` links accepted by the tools that make them readable; docs; `v0.10.0` | A pasted commit or blame link works with no hand decoding, and the phase is released |
 | 4a | Search: `search` (`git grep`) and `pickaxe` (`git log -S`) | "Where is this used on `fix/PROJ-7608`, and when did it appear?" answered without a clone |
 | 4b | Polish: GitLab URLs (`parse_gitlab_url`, `url` on `get_file`/`list_tree`, line anchors), `search` output modes and match context, the `cloneStrategy` refusal, truncation and stale-visibility review | A pasted GitLab blob link reads the file — and the line range it names — with no hand decoding; a broad search answers "how many, in which files" without parsing every match; a policy value nothing honours is refused by name rather than stored and ignored |
 
 > **Status:** phases 0, 1, 2a, 2b, 2c-1, 2c-2, 4a and 4b are released. The newest
 > tag is `v0.9.0` (4b: GitLab URLs, `search` output modes and context). Phase 3
-> (diff and history) is next. Per-phase detail: [`history.md`](history.md).
+> (diff and history) is designed above and split into 3a–3d; **3a is next**. The
+> design, including what was measured, is the section before this table.
+> Per-phase detail: [`history.md`](history.md).
 
 ### Source layout
 
@@ -593,6 +684,7 @@ rule enforced rather than remembered.
 | Silently stale mirrors | TTL/always/manual policy, fetch-on-miss, visible `synced_at` + `commit_sha` |
 | Internal CA blocks TLS | Resolve in Phase 0 before writing code |
 | Large repos / disk | A partial (`blobless`) clone was considered and **dropped in 4b**: grep, `git show` and pickaxe's patches all need blob contents, so a blobless source would fetch blobs over the network — with credentials — during a read, which is the property this server exists to avoid. The disk answer is a registered local clone. |
+| Unbounded diffs | `compare` returns a capped summary and never a patch; `diff_file` is one file at a time, with a byte cap and a context limit |
 | Token leakage | env + `http.extraheader`, never logged, read-only scope |
 | Command injection via ref/path | array args, reject leading `-`, `--` separators |
 | Fetch stalls MCP | `GIT_TERMINAL_PROMPT=0`, per-project fetch lock, OpenCode timeouts |
