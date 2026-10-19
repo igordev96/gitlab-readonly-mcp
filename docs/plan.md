@@ -8,18 +8,21 @@
 > runbook — lives in [`history.md`](history.md). Keep the two apart: this file
 > should not grow as phases land.
 
-Status: phases 0, 1, 2a, 2b, 2c-1, 2c-2 and 4a complete; newest tag `v0.8.0`
-(search and pickaxe). Ten tools are implemented: the four reads — exercised
-against the real GitLab on the success path and on a deliberately broken token —
-`search` and `pickaxe`, plus `list_repos`, `add_repo`, `remove_repo` and
-`sync_repo`. A project registers itself the first time it is used, or explicitly
-with `add_repo`, and its registry entry decides where it is read from: a mirror
-the server keeps fresh, or a clone of your own, which is read, never cloned, and
-fetched only when a ref is missing from it. Its policy (`repos.json`) can include
-`manual`, which makes no network call that `sync_repo` did not ask for, while its
-age always comes from the source's own sync stamp and never from the registry.
-The token is supplied by OpenCode's config (`~/.config/opencode/opencode.jsonc`),
-not by the shell. See `history.md`.
+Status: phases 0, 1, 2a, 2b, 2c-1, 2c-2 and 4a are released; 4b is implemented and
+verified live (2026-10-19) and awaits its release. The newest tag is `v0.8.0`
+(search and pickaxe). Eleven tools are implemented: the four reads `get_file`,
+`list_tree`, `list_refs` and `resolve_ref` — exercised against the real GitLab on
+the success path and on a deliberately broken token — plus `search`, `pickaxe`,
+`parse_gitlab_url`, `list_repos`, `add_repo`, `remove_repo` and `sync_repo`.
+`get_file` and `list_tree` also accept a GitLab web URL, so a link can be read as
+pasted, with its `#L12-20` range, instead of being decoded by hand. A project registers itself the first time it is used, or
+explicitly with `add_repo`, and its registry entry decides where it is read from: a
+mirror the server keeps fresh, or a clone of your own, which is read, never cloned,
+and fetched only when a ref is missing from it. Its policy (`repos.json`) can
+include `manual`, which makes no network call that `sync_repo` did not ask for,
+while its age always comes from the source's own sync stamp and never from the
+registry. The token is supplied by OpenCode's config
+(`~/.config/opencode/opencode.jsonc`), not by the shell. See `history.md`.
 Owner: igordev96
 Author: OpenCode
 
@@ -358,8 +361,8 @@ case-sensitive by itself and `-i` does apply to it (verified with git 2.53), so
 the live check found the case-sensitive default answering "no commit ever
 changed this" about text plainly present on the branch.
 
-`search` output modes and match context (4b, mechanics verified with git 2.53,
-2026-10-19):
+`search` output modes and match context (4b, mechanics measured with git 2.53 and
+verified live on 2026-10-19):
 
 - **`output: "matches" | "files" | "count"`.** `files` runs `git grep -l -z` and
   `count` runs `git grep -c -z`, because a broad query does not need every matched
@@ -410,8 +413,9 @@ so a URL can go to a read instead of being decoded by hand; `get_file` and
   and `get_file` renders exactly that range (1-based, inclusive): the point of
   pasting a link is that it already points at the lines.
 - `resolve: false` parses **offline** — no registry, no mirror, no network — and
-  reports `resolved="false"`, splitting the ref at the first segment. That is the
-  inspection mode for a link whose project should not be touched.
+  splits the ref at the first segment, reporting `ref_confirmed="false"` and a
+  `[not resolved: …]` note. That is the inspection mode for a link whose project
+  should not be touched.
 - Parsing is a pure function in `src/url.ts`, unit-tested against URL shapes rather
   than the network; resolving the ref is a store concern, because only the store
   knows the refs.
@@ -496,9 +500,9 @@ found, and a code change only where a check fails.
 | 4a | Search: `search` (`git grep`) and `pickaxe` (`git log -S`) | "Where is this used on `fix/PROJ-7608`, and when did it appear?" answered without a clone |
 | 4b | Polish: GitLab URLs (`parse_gitlab_url`, `url` on `get_file`/`list_tree`, line anchors), `search` output modes and match context, the `cloneStrategy` refusal, truncation and stale-visibility review | A pasted GitLab blob link reads the file — and the line range it names — with no hand decoding; a broad search answers "how many, in which files" without parsing every match; a policy value nothing honours is refused by name rather than stored and ignored |
 
-> **Status:** phases 0, 1, 2a, 2b, 2c-1, 2c-2 and 4a complete. The newest tag is
-> `v0.8.0` (4a: search and pickaxe). 4b — the GitLab URL work, `search` output
-> modes and context, and the review — is next; phase 3 (diff and history) follows.
+> **Status:** phases 0, 1, 2a, 2b, 2c-1, 2c-2 and 4a are released; 4b is
+> implemented and verified live (2026-10-19) and awaits its release. The newest
+> tag is `v0.8.0` (4a: search and pickaxe). Phase 3 (diff and history) is next.
 > Per-phase detail: [`history.md`](history.md).
 
 ### Source layout
@@ -513,11 +517,11 @@ src/
   repoStore.ts   # project -> source resolution, refs, trees, freshness policy
   sources.ts     # mirror paths, clone, fetch, per-source lock, the sync clock
   registry.ts    # repos.json: per-project source and freshness policy
-  url.ts         # GitLab web URL -> {project, target, rest, lines}     (4b)
+  url.ts         # GitLab web URL -> {project, target, rest, lines}     ✅ Phase 4b
   tools/
     result.ts      # shared tool result shapes and error rendering
     files.ts       # get_file, list_tree (+ `url`)                  ✅ Phase 2b-2/4b
-    url.ts         # parse_gitlab_url                              (4b)
+    url.ts         # parse_gitlab_url                              ✅ Phase 4b
     refs.ts        # list_refs, resolve_ref                        ✅ Phase 2b-1
     repos.ts       # list_repos, sync_repo, add_repo, remove_repo   ✅ Phase 2c-1/2c-2
     history.ts                                                    (Phase 3)

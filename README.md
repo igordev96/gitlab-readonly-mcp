@@ -7,14 +7,16 @@ branches that are not checked out locally — without ever touching your working
 tree. Content comes from a local bare mirror the server keeps in a cache
 directory, or from a clone of your own when you register one.
 
-> Phase 4a implementation. Exposes `get_file`, `list_tree`, `list_refs`,
-> `resolve_ref`, `search` and `pickaxe`, plus `list_repos`, `add_repo`,
-> `remove_repo` and `sync_repo` for choosing and controlling where a project is
-> read from. A project is read from a bare mirror that keeps itself fresh
-> (TTL + fetch-on-miss), or from a clone of your own, which is read in place and
-> fetched only when a ref it does not have is asked for. See the plan at [`docs/plan.md`](docs/plan.md) — the canonical,
-> in-repo design document — and [`docs/history.md`](docs/history.md) for
-> milestones, findings and per-phase artifacts.
+> Phase 4b implementation. Exposes `get_file`, `list_tree`, `list_refs`,
+> `resolve_ref`, `search`, `pickaxe` and `parse_gitlab_url`, plus `list_repos`,
+> `add_repo`, `remove_repo` and `sync_repo` for choosing and controlling where a
+> project is read from. `get_file` and `list_tree` accept a pasted GitLab link as
+> well as `ref` + `path`, so a URL with `#L12-20` reads exactly those lines. A
+> project is read from a bare mirror that keeps itself fresh (TTL + fetch-on-miss),
+> or from a clone of your own, which is read in place and fetched only when a ref
+> it does not have is asked for. See the plan at [`docs/plan.md`](docs/plan.md) —
+> the canonical, in-repo design document — and [`docs/history.md`](docs/history.md)
+> for milestones, findings and per-phase artifacts.
 
 ## Why git instead of the GitLab REST API?
 
@@ -89,8 +91,9 @@ Use the **absolute** path to `dist/index.js`: a global MCP server's working
 directory is the workspace it is launched from, not this project.
 
 The tools appear as `gitlab_get_file`, `gitlab_list_tree`, `gitlab_list_refs`,
-`gitlab_resolve_ref`, `gitlab_search`, `gitlab_pickaxe`, `gitlab_list_repos`,
-`gitlab_add_repo`, `gitlab_remove_repo` and `gitlab_sync_repo`.
+`gitlab_resolve_ref`, `gitlab_search`, `gitlab_pickaxe`,
+`gitlab_parse_gitlab_url`, `gitlab_list_repos`, `gitlab_add_repo`,
+`gitlab_remove_repo` and `gitlab_sync_repo`.
 
 ## Usage
 
@@ -102,6 +105,8 @@ gitlab_list_refs(project="group/sub/repo", kind="branches", search="PROJ")
 gitlab_resolve_ref(project="group/sub/repo", ref="fix/PROJ-7608")
 gitlab_list_tree(project="group/sub/repo", ref="fix/PROJ-7608", path="src")
 gitlab_get_file(project="group/sub/repo", ref="fix/PROJ-7608", path="src/index.tsx")
+gitlab_get_file(url="https://gitlab.example.com/group/sub/repo/-/blob/fix/PROJ-7608/src/index.tsx#L118-126")
+gitlab_parse_gitlab_url(url="https://gitlab.example.com/group/sub/repo/-/blob/fix/PROJ-7608/src/index.tsx")
 gitlab_search(project="group/sub/repo", ref="fix/PROJ-7608", query="vehicleCount")
 gitlab_pickaxe(project="group/sub/repo", ref="fix/PROJ-7608", query="vehicleCount")
 gitlab_remove_repo(project="group/sub/repo")
@@ -163,6 +168,40 @@ Binary files are refused. File output is capped (default 200 KB, override with
 `max_bytes`); ref listings and tree listings are capped too (default 200, override
 with `max_refs` and `max_entries` respectively) and say when they were cut short.
 
+## GitLab links
+
+`get_file` and `list_tree` accept a GitLab web URL directly, so a link can be
+passed on as pasted:
+
+```
+gitlab_get_file(url="https://gitlab.example.com/group/sub/repo/-/blob/fix/PROJ-7608/src/index.tsx#L118-126")
+```
+
+`/-/blob/` and `/-/raw/` name a file, `/-/tree/` a directory, and `/-/blame/` a
+file (blame itself is phase 3). A `#L12` or `#L12-20` anchor becomes the read
+range — 1-based and inclusive — and the result says which lines came back:
+
+```
+<file project="group/sub/repo" ref="fix/PROJ-7608" commit="abc123…" path="src/index.tsx" lines="118-126" file_lines="373" synced_at="…">
+118: …
+</file>
+```
+
+A branch name may contain slashes, and so may the path, which means
+`/-/blob/fix/PROJ-7608/src/index.tsx` does not say where the ref ends. The
+server matches the remainder against the project's real branches and tags and
+takes the **longest** known ref, the greedy resolution GitLab's own links rely on; `?ref_type=tags` prefers the tag when one name is both. If nothing matches,
+the first segment is used and the read fails with the usual close matches, so a
+link never becomes a confident guess.
+
+The link's host must be the configured `GITLAB_HOST`; a link to another instance
+is refused with both hosts named rather than read from a same-named project here.
+Commit, history and merge-request links are refused by name, because they do not
+point at a file or a directory. `parse_gitlab_url(url)` reports what a link names —
+project, ref, path and line range, plus the commit once the ref is resolved —
+without reading the file; `resolve=false` splits it offline, touching neither the
+registry nor the network, for a link whose project should not be touched.
+
 ## Search
 
 `search` greps the whole tree of a ref — `git grep`, not a checkout — and groups
@@ -192,6 +231,46 @@ use `:(glob)src/**/*.tsx` for zero or more.
 Answers are capped (`max_matches`, default 100) and the true total is reported, so
 a capped answer still tells you how big the thing is, and each long matched line
 is cut with the number of characters left out.
+
+`output` chooses what the answer is made of. The default `"matches"` returns the
+matched lines; `"files"` returns only the paths; `"count"` returns one
+`path<TAB>count` row per file:
+
+```
+<search project="group/sub/repo" ref="fix/PROJ-7608" commit="abc123…" query="data-testid" output="count" count="100" total="682" files="269" synced_at="…">
+src/App.tsx	12
+src/components/Header.tsx	4
+…
+</search>
+```
+
+The cheap modes stay exact where the match list would be capped: live, `data-testid`
+on the pilot was 111 KB of matched lines, 28 KB of paths and 29 KB of counts —
+`count="682"` across 269 files without parsing every line. `max_matches` caps the
+rows printed in every mode, `count` still totals every match, and a footer says
+when rows were cut.
+
+`context: N` adds the lines around each match, marking it with `>` (up to 20 files
+per call):
+
+```
+src/reports/OrderTotals.tsx
+  20:   const summary = useSummary();
+  21:   const title = …
+> 22: export const OrderTotalsReport = () => {
+  23:   …
+  …
+  62:   return (
+  63:     <Page>
+> 64:       title={translations.reporting.seeOrderTotalsPage}
+  65:     </Page>
+  66:   );
+```
+
+Overlapping ranges merge, distant ones are separated by `…`, and a file whose read
+is capped says so. Context is assembled from one read per displayed file, not by
+git's `-C`/`-W`, because under `-z` git's context lines cannot say which line
+matched. `N` defaults to 0, and `context` requires `output="matches"`.
 
 `pickaxe` answers the follow-up — *when* did this text appear:
 
@@ -354,6 +433,10 @@ needed to find out what happened.
 | *The registered clone at … has no remote to fetch from* | The clone has no remote configured, so a ref it does not already hold cannot be fetched. Everything it does hold still reads. |
 | `search` finds nothing, although you can see the text | Matching is literal and one argument: `foo\|bar` means that text, not `foo` or `bar` — pass `regex=true` for alternation. A `path` that matches nothing also returns no matches rather than an error, and a plain pathspec's `**` needs a directory level (`src/**/*.tsx` misses `src/index.tsx`; use `:(glob)src/**/*.tsx`). |
 | `pickaxe` lists no commits for text you can see | It reports commits whose diff *changed how many times* the text appears (`git log -S`), so text unchanged since the root commit, or brought in by a merge git does not diff, has no commit to list. Matching is literal and case-insensitive; `case_sensitive=true` follows the case exactly. |
+| A link is refused: `URL host "…" does not match GITLAB_HOST ("…")` | The link belongs to another GitLab instance. Use a link from the instance `GITLAB_HOST` names; the server will not read a same-named project from elsewhere. |
+| A link is refused: *is a commit link* or *is a merge request link* | Those links name no file or directory. Take the ref (or commit) and the path from the page and call `get_file` with them; `resolve_ref` and `list_tree` help find both. |
+| A `context` call is refused | It needs `output="matches"`; `files` and `count` have no matched line to put context around. |
+| `list_repos` prints `clone_strategy=blobless(unsupported)` | A `repos.json` entry asks for a clone strategy this server does not implement, so every read of that project fails with the value named. Set `"cloneStrategy": "full"` if the data on disk is a full clone, or `remove_repo` it with `deleteMirror=true` and use the project again, which clones it in full. |
 
 The credential case is worth one extra note: **a running MCP server keeps the
 token it started with.** Editing `GITLAB_TOKEN` does nothing to a server that is
@@ -407,6 +490,7 @@ test/
   refs.test.ts          ref listing, resolution, close matches
   tree.test.ts          directory listings, the ls-tree parser, rendering
   search.test.ts        grep and log -S: their parsers, rendering, fixture reads
+  url.test.ts           GitLab URL shapes, ref resolution, line anchors
   repos.test.ts         rendering the registry listing
   git.test.ts           the git wrapper
   gitDiagnostics.test.ts  git stderr → actionable hint
@@ -430,6 +514,8 @@ tsconfig.build.json     emit: src/ only → dist/
   refs there.
 - **Phase 4a (done):** `search` (`git grep` over the tree of any ref) and
   `pickaxe` (`git log -S`: when the text appeared).
+- **Phase 4b (done, awaiting its release):** GitLab URL parsing and `url` support
+  on `get_file`/`list_tree` with `#L12-20` ranges, `search` output modes
+  (`files`, `count`) and match context, the `cloneStrategy` refusal, and the
+  truncation and stale-visibility review.
 - **Phase 3 (next):** `compare`, `diff_file`, `log`, `get_commit`, `blame`.
-- **Phase 4b:** GitLab URL parser, match context for `search`, `files`/`count`
-  output modes, blobless clones, truncation and stale-visibility review.

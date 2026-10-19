@@ -111,6 +111,16 @@ Running record of things learned while building. Keep appending.
 | 2026-10-18 | `git grep -p` (show the enclosing function) writes `path=line=text` in the normal format — but under `-z` the function header is byte-identical to an ordinary match (`path\0line\0text`), so the marker is gone exactly where the robust parser is. | Confirms the decision to keep match context out of 4a: a `-p` feature must either abandon `-z` and its newline-safe parsing, or distinguish the two some other way. Noted on the plan so 4b starts from the measurement rather than the assumption. |
 | 2026-10-18 | `search` *can* fetch on a miss where `list_refs` cannot, because it resolves one ref rather than listing all of them: a ref that does not resolve is a detectable miss, a stale list is not. Measured: a hit inside the TTL ~100 ms, a miss that fetches 1.9–2.1 s, a hit that fetched the mirror 2.4 s. | Kept: `search` is a read, so it inherits the read freshness rules, and the check shows the cost of each path. The one fetch that still has no signal is `list_refs`, unchanged. |
 | 2026-10-18 | PowerShell's `>` writes UTF-16LE, so a live-check log redirected with it (`node … > out.txt`) reads back as a binary file and cannot be opened by the file reader; the same output re-encoded as UTF-8 reads fine. | Re-encode scratch logs with `[IO.File]::WriteAllText(path, text, [Text.UTF8Encoding]::new($false))` before reading them, or read the tool output directly. Consistent with the earlier note that the console mangles UTF-8 while files stay correct. |
+| 2026-10-19 | **A blob URL does not say where its ref ends.** `/-/blob/fix/PROJ-7608/src/index.tsx` has three plausible splits and the ref may itself contain slashes, so no parser can decide from the URL alone. | The remainder after `blob`/`tree` is matched against the source's real refs (branches and tags, no fetch) and the **longest** known prefix followed by `/` or the end wins — the greedy resolution GitLab itself does. `?ref_type=tags` breaks a branch/tag tie; with no match the first-segment reading is kept, the URL reports `ref_confirmed="false"`, and the read fails with the usual not-found message and suggestions. Verified live: `fix/PROJ-7608` split correctly and reported `ref_kind="branch" ref_confirmed="true"`. |
+| 2026-10-19 | **`-l -z` and `-c -z` are different layouts, and neither is the match layout.** `-l -z` writes `rev:path\0` with no newline at all, so NUL is the only separator; `-c -z` writes `rev:path\0count\n`, where the count sits where `line` sits and no text follows. | Read from the bytes, then one parser per shape: `parseGrepPaths` splits on NUL, drops the final (empty or torn) token and strips the `sha:` prefix; `parseGrepCounts` splits on NUL, then cuts each record at its first newline. Measured on `data-testid`: 111 KB of matches, 28 KB of paths, 29 KB of counts — so both cheap modes stay exact where the match list would have been capped. |
+| 2026-10-19 | **`-C`/`-W` cannot say which line matched.** Under `-z` their context lines use the match layout exactly (`path\0line\0text`), so after parsing a marked line is indistinguishable from its neighbours — the same shape of problem `-p` had in 4a. | `context: N` is assembled in TypeScript: for the matches actually displayed (grouped by file, capped at 20 files) one `git show <commit>:<path>` is read — the `get_file` path — and lines within `N` of a match are printed, the matched line marked `>`, overlapping ranges merged and distant ones separated by `…`. Verified live on the pilot: hunks with `>` and `…`, and `N=0` left the output unchanged from 4a's. |
+| 2026-10-19 | **`cloneStrategy: "blobless"` was stored and honoured nowhere.** The registry parsed it and `list_repos` did not say so; `resolveSource` never looked at it, so a blobless mirror on disk would have been read as if it were full and failed later as a bad ref or a missing object — a policy value nothing implements, failing somewhere else. | Refused by name where a source is resolved: the error quotes the project, the value and the fix, and the value stays in `repos.json` (dropping it would hide what was written). `list_repos` prints `clone_strategy=<value>(unsupported)` rather than a clean row. Tests cover both the refusal and the repair by hand. |
+| 2026-10-19 | **A byte cap can split a UTF-8 character.** Cutting git's stdout buffer at exactly the cap and decoding it invents `U+FFFD` for the half character — a character that never existed in the repository, presented as file content. | `decodeOutput` drops the trailing character the cut left incomplete instead of fabricating one. The first implementation dropped a *complete* character at the boundary and the new test caught it; the rule is now pinned by unit tests and by a fixture branch whose content ends in a multi-byte character. |
+| 2026-10-19 | **`pickaxe`'s `truncated` flag merged two causes.** A capped commit list and a stdout stream cut at the byte cap printed the same footer, which advised raising `limit` even when more bytes, not more limit, were needed. | `outputTruncated` is separate: `truncated` still means "the limit hid commits", and the byte-cap footer says the history stream was cut at the size limit rather than advising a higher `limit`. The renderer prints whichever applies. |
+| 2026-10-19 | **Live: four parallel reads shared one fetch.** Four concurrent first reads on a stale mirror all reported the same `synced_at`; the first paid the fetch and the rest answered behind it. | The fetch decision is re-checked inside the per-source lock, so callers queued behind an in-flight fetch do not fetch again — the design's in-lock re-check, verified live rather than only in the fixture. |
+| 2026-10-19 | **Live: a miss fetch also serves the suggestions.** A deliberately wrong ref cost one fetch (the mirror's stamp advanced 26 s) and then produced five real branch suggestions. | Intended: a missing ref is a detectable miss, so `ref not found` may be answered *after* a fetch — and that fetch is what makes the suggestions current. One deliberate fetch per miss, not a stampede. |
+| 2026-10-19 | **After `opencode service restart` the MCP catalog was briefly empty**, then listed 11 tools; a probe run inside that window would have concluded the server had failed to start. | A live probe must allow a beat after a restart. The tool list the assistant can see is itself the probe: a missing tool means the restart has not landed yet, not that registration is broken. |
+| 2026-10-19 | The 4b truncation and stale-visibility review found no further defect, but three asymmetries are deliberate and now stated: a `get_file` byte cap names the limit but not how many bytes were cut; a ranged read ignores `max_bytes` (the range is the request); and a file read preserves CRLF while match and hunk views flatten it (bytes versus a one-line view). | Left as they are, on the grounds that each reports what it knows and nothing guesses silently. `fetched` stays internal because `synced_at` is the evidence; `list_refs` keeps no fetch-on-miss because a stale list is not a detectable miss; `sync_repo`'s row still does not name the source it synced. |
 
 ---
 
@@ -118,6 +128,54 @@ Running record of things learned while building. Keep appending.
 
 What each phase actually touched. The plan keeps only the design; this is the
 blow-by-blow.
+
+### Phase 4b artifacts
+
+- `docs/plan.md` §4 — the URL, output-mode and context design written and reviewed
+  **before** the code (`b0514dd`), including the measured `-l -z` / `-c -z` layouts
+  and the decision to assemble context in TypeScript rather than trust `-C`.
+- `src/url.ts` — new: the pure parser/splitter `parseGitlabUrl`,
+  `resolveUrlParts`, `parseLineAnchor` and `hostOf`, including the empty-host rule
+  that keeps `file://` fixtures testable. No registry, no network.
+- `src/tools/url.ts` — new: `parse_gitlab_url` and `formatUrl`
+  (`target`, `ref_confirmed`, `ref_kind`, notes).
+- `src/repoStore.ts` — `resolveUrl` (that greedy longest-prefix resolution over
+  branches and tags), the three `-z` parsers (`zRecords`, `parseGrepPaths`,
+  `parseGrepCounts`), the context helpers (`contextRanges`, `contextLines`,
+  `contextFor`), `sliceLines`, `assertSupportedStrategy`, `RepoSummary.cloneStrategy`
+  and `PickaxeResult.outputTruncated`.
+- `src/tools/files.ts` — `url` and `lines` on `get_file`, `formatRangeBody`, the
+  directory-link and ref-without-path refusals, the URL/`project` disagreement
+  check, and the byte-cap notes.
+- `src/tools/search.ts` — `output` and `context` on `search`, per-mode rendering,
+  hunk assembly, and the split truncation footers for both tools.
+- `src/tools/repos.ts` — `clone_strategy=<value>(unsupported)` in the listing.
+- `src/git.ts` — `decodeOutput()`, and the capped stdout read path that uses it.
+- `src/registry.ts`, `src/server.ts` — `CloneStrategy` semantics (blobless parsed
+  and kept, refused on use), the eleventh tool, and URL wording in the instructions.
+- `test/url.test.ts` — new: URL shapes, the host rule, line anchors, offline
+  parsing.
+- `test/search.test.ts` — the three output modes, the context hunk rules, and
+  fixture branches `feat/CONTEXT` and `feat/MANY` (21 files).
+- `test/store.test.ts` — blobless refusal and repair, and the UTF-8 cut end to end
+  (fixture branch `feat/UTF8`).
+- `test/git.test.ts`, `test/repos.test.ts`, `test/protocol.test.ts` — the decoder
+  cases (including the invalid-tail rule), the unsupported-strategy cell, and
+  `url` / `output: "count"` / `context: 1` over the real MCP surface.
+- Suite: 169 tests / 31 suites at `v0.8.0` → **254 / 46**.
+- Commits: `3405aff` URLs and line ranges, `a08a52e` `search` output modes,
+  `b51d9c5` `search` context, `924cbc3` the `cloneStrategy` refusal plus the
+  truncation and stale-visibility review.
+- Live check, after `opencode service restart`, against `example-app` @
+  `fix/PROJ-7608` (`8297d0d`): `parse_gitlab_url` on a slashed-ref blob link
+  with `#L118-126` → `ref_kind="branch" ref_confirmed="true"`; `get_file` by that
+  URL → `file_lines="373"` and exactly lines 118–126; `search data-testid
+  output="count"` → `count="100" total="682" files="269"`; `search context=2` →
+  `>`-marked hunks and `…`; `list_tree` by a tree URL. Five failure shapes behaved
+  as specified: a foreign host, `context` paired with `output: "files"`, a bad ref
+  with five suggestions, an MR link, and a URL whose project disagreed with
+  `project=`. The tag and its milestone row belong to the release commit, which
+  has not been made yet.
 
 ### Phase 4a artifacts
 
