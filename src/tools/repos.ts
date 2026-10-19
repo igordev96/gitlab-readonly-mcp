@@ -18,6 +18,9 @@ export function formatRepoList(result: RepoListing): string {
       `source=${repo.source}`,
       `freshness=${repo.freshnessMode}`,
       `ttl=${repo.freshnessTtlSeconds}s`,
+      repo.cloneStrategy === "full"
+        ? undefined
+        : `clone_strategy=${repo.cloneStrategy}(unsupported)`,
       `present=${repo.present}`,
       repo.localPath ? `local_path=${repo.localPath}` : undefined,
       repo.syncedAt ? `synced_at="${repo.syncedAt.toISOString()}"` : SYNCED_AT_UNKNOWN,
@@ -39,6 +42,8 @@ export function registerRepoTools(server: McpServer, store: RepoStore, config: C
         "List the repositories this server knows about, with the freshness policy applied to " +
         "each and when it last synced successfully. Each row is the project path followed by " +
         "`source` (`mirror` or `local`), `freshness` (`ttl`, `always` or `manual`), `ttl`, " +
+        "`clone_strategy=<value>(unsupported)` when the registration names a strategy this server " +
+        "does not implement (only `full` is; such a project refuses to be read until it is re-cloned), " +
         "`present` (whether the data is on disk), `local_path` for a local clone, and " +
         "`synced_at`, or `unknown` when it has never synced. A mirror-backed project is " +
         "registered the first time it is used; `add_repo` registers one before that, and is " +

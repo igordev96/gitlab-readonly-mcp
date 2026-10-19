@@ -13,7 +13,13 @@ import type { FetchMode } from "./config.js";
 /** Where a project's git data is read from. */
 export type RepoSource = "mirror" | "local";
 
-/** How much of history a clone carries. `blobless` is not implemented yet. */
+/**
+ * How much of history a clone carries.
+ *
+ * Only `full` is supported. `blobless` is parsed and kept rather than rewritten,
+ * so a registry edited by hand keeps saying what it says and a read can refuse it
+ * by name: coercing it to `full` would claim blobs that are not on disk.
+ */
 export type CloneStrategy = "full" | "blobless";
 
 /**
@@ -71,6 +77,9 @@ export function parseRegistry(raw: string): Map<string, RepoEntry> | undefined {
     entries.set(project, {
       ...entry,
       source: entry.source,
+      // Kept as written, not coerced: the value is what a read refuses on, and the
+      // refusal should name what the file says. Anything else is `full`, which is
+      // the only strategy this server implements.
       cloneStrategy: entry.cloneStrategy === "blobless" ? "blobless" : "full",
     });
   }

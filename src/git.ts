@@ -47,6 +47,45 @@ const MAX_STDERR_BYTES = 256 * 1024;
  * terminal prompts are disabled so a bad credential fails fast instead of
  * hanging.
  */
+/**
+ * Decode git's output, dropping a character the byte cap cut in half.
+ *
+ * `toString("utf8")` turns an incomplete trailing sequence into U+FFFD — a
+ * character the file does not contain, in the one place the reader is already
+ * being told that something is missing. A stream the cap did not touch is
+ * decoded as it always was, so nothing is dropped on a guess.
+ */
+export function decodeOutput(buffer: Buffer, truncated: boolean): string {
+  if (!truncated) {
+    return buffer.toString("utf8");
+  }
+
+  // How many continuation bytes (10xxxxxx) the stream ends with: at most three
+  // can belong to one character.
+  let continuations = 0;
+  while (
+    continuations < 3 &&
+    ((buffer[buffer.length - 1 - continuations] ?? 0) & 0xc0) === 0x80
+  ) {
+    continuations += 1;
+  }
+
+  const leadIndex = buffer.length - 1 - continuations;
+  const lead = leadIndex >= 0 ? (buffer[leadIndex] ?? 0) : 0;
+  if (lead >= 0xc0) {
+    const expected = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : 2;
+    if (1 + continuations < expected) {
+      // The lead byte and the continuation bytes that did arrive are one cut
+      // character, not data: drop them all rather than decode half of it.
+      return buffer.subarray(0, leadIndex).toString("utf8");
+    }
+  }
+
+  // Either the last character is complete, or the tail is not UTF-8 to begin with
+  // — in which case U+FFFD is the honest rendering of the file's own bytes.
+  return buffer.toString("utf8");
+}
+
 export class Git {
   constructor(private readonly options: GitOptions) {}
 
@@ -137,7 +176,7 @@ export class Git {
       child.on("close", (code) => {
         resolve({
           code,
-          stdout: Buffer.concat(out).toString("utf8"),
+          stdout: decodeOutput(Buffer.concat(out), truncated),
           stderr: Buffer.concat(errs).toString("utf8"),
           truncated,
         });

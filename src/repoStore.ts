@@ -2,7 +2,7 @@ import path from "node:path";
 import type { Config, FetchMode } from "./config.js";
 import { Git, GitError, type GitRunResult } from "./git.js";
 import { explainGitError } from "./gitDiagnostics.js";
-import { RepoRegistry, type RepoEntry, type RepoSource } from "./registry.js";
+import { RepoRegistry, type CloneStrategy, type RepoEntry, type RepoSource } from "./registry.js";
 import { SourceManager, type GitSource } from "./sources.js";
 import { parseGitlabUrl, resolveUrlParts, type LineRange } from "./url.js";
 
@@ -341,7 +341,10 @@ export interface PickaxeResult {
   caseSensitive: boolean;
   path?: string;
   entries: PickaxeEntry[];
+  /** True when `limit` hid commits, or the byte cap cut the output. */
   truncated: boolean;
+  /** True only for the byte cap: `entries` is then what fitted, not what matched. */
+  outputTruncated: boolean;
   syncedAt?: Date;
   fetched: boolean;
   /** Set when the freshness check failed and this answer came from the cache. */
@@ -371,6 +374,11 @@ export interface RepoSummary {
   freshnessTtlSeconds: number;
   /** Whether the stored data is on disk: the mirror, or the registered clone. */
   present: boolean;
+  /**
+   * The strategy this project is registered with. `blobless` is listed as it is,
+   * so a project that reads will refuse is still visible here.
+   */
+  cloneStrategy: CloneStrategy;
   /** Set for a local-clone registration. */
   localPath?: string;
   /**
@@ -1072,6 +1080,7 @@ export class RepoStore {
       repos.push({
         project,
         source: entry.source,
+        cloneStrategy: entry.cloneStrategy,
         freshnessMode: policy.mode,
         freshnessTtlSeconds: policy.ttlSeconds,
         present,
@@ -1678,6 +1687,7 @@ export class RepoStore {
       path: cleanPath,
       entries: entries.length > limit ? entries.slice(0, limit) : entries,
       truncated: entries.length > limit || found.truncated,
+      outputTruncated: found.truncated,
       syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
       fetched,
       refreshError,
@@ -1957,12 +1967,34 @@ export class RepoStore {
    * this throws until `sync_repo` is called, the one caller that passes
    * `allowClone`.
    */
+  /**
+   * Refuse a project whose registration names a clone strategy this server does
+   * not implement.
+   *
+   * Checked in `resolveSource`, which every read, search, sync and URL resolution
+   * passes through, so one check covers them all. Refusing here rather than
+   * reading anyway matters: a blobless mirror has no blobs, and a reader that
+   * carried on would fail later with a missing object and blame the ref.
+   */
+  private assertSupportedStrategy(project: string, entry: RepoEntry | undefined): void {
+    if (!entry || entry.cloneStrategy === "full") {
+      return;
+    }
+    throw new Error(
+      `${project} is registered with cloneStrategy "${entry.cloneStrategy}", which this server does ` +
+        `not support: only "full" is. If the mirror on disk is a full clone, set "cloneStrategy": ` +
+        `"full" for this project in repos.json; otherwise \`remove_repo\` it with \`deleteMirror: true\` ` +
+        `and use it again, which clones it in full.`,
+    );
+  }
+
   private async resolveSource(
     project: string,
     options: { allowClone?: boolean } = {},
   ): Promise<GitSource> {
     const clean = validateProject(project);
     const entry = await this.registry.get(clean);
+    this.assertSupportedStrategy(clean, entry);
 
     if (entry?.source === "local") {
       return this.sourceFor(clean, entry);

@@ -170,9 +170,11 @@ export function formatPickaxe(result: PickaxeResult): string {
 
   const body = rows.length > 0 ? rows.join("\n") : "(no commits changed how often this appears)";
   const footer =
-    (result.truncated
-      ? `\n[truncated: showing the most recent ${result.entries.length} commits; raise "limit" for older ones]`
-      : "") + refreshFailedNote(result.refreshError);
+    (result.outputTruncated
+      ? "\n[truncated: the history output was cut at the size limit, so older commits may be missing]"
+      : result.truncated
+        ? `\n[truncated: showing the most recent ${result.entries.length} commits; raise "limit" for older ones]`
+        : "") + refreshFailedNote(result.refreshError);
 
   return `<pickaxe ${attributes}>\n${body}${footer}\n</pickaxe>`;
 }

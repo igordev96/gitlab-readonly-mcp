@@ -490,6 +490,7 @@ function pickaxeResult(overrides: Partial<PickaxeResult> = {}): PickaxeResult {
     caseSensitive: false,
     entries: [],
     truncated: false,
+    outputTruncated: false,
     fetched: false,
     ...overrides,
   };
@@ -521,6 +522,15 @@ describe("formatPickaxe", () => {
     assert.match(text, /truncated="true"/);
     assert.match(text, /case_sensitive="true"/);
     assert.match(text, /\[truncated: showing the most recent 1 commits; raise "limit" for older ones\]/);
+  });
+
+  it("does not tell the reader to raise a limit that was not the cause", () => {
+    // The byte cap cut the walk, so more `limit` would return more of the same
+    // truncated stream; naming it as the cause would send the reader the wrong way.
+    const text = formatPickaxe(pickaxeResult({ truncated: true, outputTruncated: true }));
+    assert.match(text, /truncated="true"/);
+    assert.match(text, /\[truncated: the history output was cut at the size limit/);
+    assert.doesNotMatch(text, /raise "limit"/);
   });
 });
 

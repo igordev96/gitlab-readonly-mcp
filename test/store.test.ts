@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 import type { Config } from "../src/config.js";
 import { Git, GitError } from "../src/git.js";
 import { NotFoundError, RepoStore } from "../src/repoStore.js";
+import { formatRepoList } from "../src/tools/repos.js";
 import { addBranchWithFile, buildFixture, commitOnBranch } from "./fixture.js";
 
 const fixture = buildFixture(path.join(os.tmpdir(), "glmcp-fixture-store"));
@@ -29,6 +30,10 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
 
 const store = new RepoStore(makeConfig(), new Git({ bin: "git" }));
 
+// A file whose character straddles the byte cap: "é" is two bytes, so a two-byte
+// read lands in the middle of it.
+addBranchWithFile(fixture.work, "feat/UTF8", "utf8.txt", "héllo", "utf8 fixture");
+
 describe("store layer", () => {
   it("reads a file from a non-default branch", async () => {
     const result = await store.readFile("demo", "fix/TEST-1", "src/index.tsx");
@@ -36,6 +41,18 @@ describe("store layer", () => {
     assert.match(result.commit, /^[0-9a-f]{40}$/);
     assert.equal(result.project, "demo");
     assert.equal(result.path, "src/index.tsx");
+  });
+
+  it("does not invent a character when the byte cap cuts one in half", async () => {
+    // The cap is the caller's here, not the hard one: two bytes is exactly half
+    // of "é", and a raw decode would turn the other half into U+FFFD.
+    const cut = await store.readFile("demo", "feat/UTF8", "utf8.txt", 2);
+    assert.equal(cut.truncated, true);
+    assert.equal(cut.content, "h");
+
+    const whole = await store.readFile("demo", "feat/UTF8", "utf8.txt", 3);
+    assert.equal(whole.truncated, true);
+    assert.equal(whole.content, "hé", "a character that arrived whole is kept");
   });
 
   it("reads a different version from main", async () => {
@@ -463,5 +480,64 @@ describe("the project registry and freshness policy", () => {
     assert.equal(repo.present, false);
     assert.equal(repo.freshnessMode, "manual");
     assert.equal(repo.syncedAt, undefined, "no successful fetch has happened yet");
+  });
+});
+
+describe("a clone strategy this server does not implement", () => {
+  const git = new Git({ bin: "git" });
+  const cache = path.join(fixture.root, "cache-blobless");
+
+  // Written by hand, the way a user (or a later version) could. The registry keeps
+  // the value rather than quietly rewriting it: a read has to be able to name what
+  // it refuses, and a coercion to "full" would claim blobs that are not on disk.
+  fs.mkdirSync(cache, { recursive: true });
+  fs.writeFileSync(
+    path.join(cache, "repos.json"),
+    JSON.stringify({
+      version: 1,
+      repos: { demo: { source: "mirror", cloneStrategy: "blobless" } },
+    }),
+    "utf8",
+  );
+  const store = new RepoStore(makeConfig({ cacheDir: cache }), git);
+
+  it("refuses a read by name, and clones nothing on the way", async () => {
+    await assert.rejects(
+      () => store.readFile("demo", "main", "src/index.tsx"),
+      (error: Error) => {
+        assert.match(error.message, /demo/);
+        assert.match(error.message, /cloneStrategy "blobless"/);
+        assert.match(error.message, /only "full"/);
+        assert.match(error.message, /deleteMirror: true/, "the message says how to fix it");
+        return true;
+      },
+    );
+    assert.equal(fs.existsSync(store.mirrorPath("demo")), false);
+  });
+
+  it("refuses a sync too: fetching does not put the blobs back", async () => {
+    await assert.rejects(() => store.syncRepo("demo"), /cloneStrategy "blobless"/);
+  });
+
+  it("lists it as unsupported, and leaves the file saying what it said", async () => {
+    const { repos } = await store.listRepos();
+    const [repo] = repos;
+    assert.equal(repo?.cloneStrategy, "blobless");
+    assert.equal(repo?.present, false);
+    assert.match(formatRepoList({ repos }), /clone_strategy=blobless\(unsupported\)/);
+
+    const onDisk = JSON.parse(fs.readFileSync(path.join(cache, "repos.json"), "utf8")) as {
+      repos: Record<string, { cloneStrategy?: string }>;
+    };
+    assert.equal(onDisk.repos.demo?.cloneStrategy, "blobless");
+  });
+
+  it("is repaired by registering it again, which re-clones it in full", async () => {
+    await store.addRepo("demo");
+    const { repos } = await store.listRepos();
+    assert.equal(repos[0]?.cloneStrategy, "full");
+
+    const read = await store.readFile("demo", "main", "src/index.tsx");
+    assert.match(read.content, /export const hello/);
   });
 });
