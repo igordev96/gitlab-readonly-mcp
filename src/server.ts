@@ -36,8 +36,8 @@ export function createServer(config: Config, store: RepoStore): McpServer {
         "into a commit, `list_tree` to browse a directory, and `get_file` to read a " +
         "file — all without changing any working tree. `search` greps a whole tree at " +
         "any ref, and `pickaxe` says when a piece of text appeared. `log` lists " +
-        "commits on a ref, and `get_commit` reads one commit and its changed files. " +
-        "A GitLab web link " +
+        "commits on a ref, `get_commit` reads one commit and its changed files, " +
+        "and `blame` says who last touched a line of a file. A GitLab web link " +
         "can be handed to `get_file` or `list_tree` as `url`, or inspected with " +
         "`parse_gitlab_url`. Repositories are " +
         "mirrored on first use; `list_repos` reports what is registered and how fresh " +

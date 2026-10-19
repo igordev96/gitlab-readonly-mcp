@@ -12,14 +12,17 @@ import { Git } from "../src/git.js";
 import {
   NotFoundError,
   RepoStore,
+  blameDate,
+  parseBlame,
   parseCommitMetadata,
   parseLogEntries,
   parseNameStatus,
   parseNumstat,
+  type BlameResult,
   type CommitResult,
   type LogResult,
 } from "../src/repoStore.js";
-import { formatCommit, formatLog } from "../src/tools/history.js";
+import { formatBlame, formatCommit, formatLog, parseLineSpec } from "../src/tools/history.js";
 import { addBranchWithFile, addMergedBranch, buildFixture, renameOnBranch } from "./fixture.js";
 
 const fixture = buildFixture(path.join(os.tmpdir(), "glmcp-fixture-history"));
@@ -360,5 +363,243 @@ describe("history rendering", () => {
     assert.match(text, /patch_truncated="true"/);
     assert.match(text, /\[truncated: the file list was cut at the size limit\]/);
     assert.match(text, /\[truncated: the patch was cut at the byte limit\]/);
+  });
+});
+
+describe("blame", () => {
+  it("blames a file at a ref and states the commit", async () => {
+    const result = await store.blame("demo", "src/index.tsx", { ref: "fix/TEST-1" });
+    assert.equal(result.project, "demo");
+    assert.equal(result.ref, "fix/TEST-1");
+    assert.equal(result.path, "src/index.tsx");
+    assert.equal(result.binary, false);
+    assert.equal(result.fileLines, 1);
+    assert.equal(result.groups.length, 1);
+    assert.equal(result.groups[0]?.commit, result.commit);
+    assert.equal(result.groups[0]?.author, "Test");
+    assert.match(result.groups[0]?.date ?? "", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+    assert.equal(result.groups[0]?.lines[0]?.text, "export const hello = 'fix/TEST-1';");
+    assert.equal(result.truncated, false);
+  });
+
+  it("groups consecutive lines from one commit into one row", async () => {
+    const rename = await store.getCommit("demo", "feat/RENAME");
+    const parent = rename.parents[0] ?? "";
+    const result = await store.blame("demo", "src/many.ts", { ref: parent });
+    assert.equal(result.groups.length, 1);
+    assert.deepEqual(
+      result.groups[0]?.lines.map((line) => line.line),
+      [1, 2, 3, 4, 5, 6, 7, 8],
+    );
+    assert.equal(result.groups[0]?.boundary, false);
+  });
+
+  it("keeps metadata for a commit that reappears after another one", async () => {
+    const result = await store.blame("demo", "src/renamed.ts", { ref: "feat/RENAME" });
+    assert.equal(result.fileLines, 8);
+    assert.equal(result.groups.length, 3);
+    assert.deepEqual(
+      result.groups.map((group) => group.lines.map((line) => line.line)),
+      [[1, 2, 3, 4], [5], [6, 7, 8]],
+    );
+    assert.equal(result.groups[0]?.commit, result.groups[2]?.commit);
+    // Porcelain prints the metadata block once per commit, so the last group
+    // only has its author because the parser cached it.
+    assert.equal(result.groups[2]?.author, "Test");
+    assert.match(result.groups[2]?.date ?? "", /^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("narrows to a line range and reports what came back", async () => {
+    const result = await store.blame("demo", "src/renamed.ts", {
+      ref: "feat/RENAME",
+      lines: { from: 4, to: 6 },
+    });
+    assert.equal(result.lines?.from, 4);
+    assert.equal(result.lines?.to, 6);
+    assert.equal(result.lines?.availableFrom, 4);
+    assert.equal(result.lines?.availableTo, 6);
+    assert.equal(result.lines?.fileLines, 8);
+    assert.deepEqual(
+      result.groups.map((group) => group.lines.map((line) => line.line)),
+      [[4], [5], [6]],
+    );
+  });
+
+  it("clamps a range that runs past the end", async () => {
+    const result = await store.blame("demo", "src/renamed.ts", {
+      ref: "feat/RENAME",
+      lines: { from: 6, to: 20 },
+    });
+    assert.equal(result.lines?.availableFrom, 6);
+    assert.equal(result.lines?.availableTo, 8);
+    assert.deepEqual(
+      result.groups.map((group) => group.lines.map((line) => line.line)),
+      [[6, 7, 8]],
+    );
+  });
+
+  it("returns no groups, not an error, for a range entirely past the end", async () => {
+    const result = await store.blame("demo", "src/renamed.ts", {
+      ref: "feat/RENAME",
+      lines: { from: 20, to: 25 },
+    });
+    assert.deepEqual(result.groups, []);
+    assert.equal(result.lines?.availableFrom, undefined);
+    assert.equal(result.fileLines, 8);
+  });
+
+  it("caps the lines it returns and says so", async () => {
+    const result = await store.blame("demo", "src/many.ts", {
+      ref: (await store.getCommit("demo", "feat/RENAME")).parents[0] ?? "",
+      maxLines: 3,
+    });
+    assert.equal(result.groups.length, 1);
+    assert.equal(result.groups[0]?.lines.length, 3);
+    assert.equal(result.truncated, true);
+    assert.equal(result.outputTruncated, false);
+  });
+
+  it("reports a binary file instead of blaming it", async () => {
+    const result = await store.blame("demo", "assets/logo.bin", { ref: "feat/BINARY" });
+    assert.equal(result.binary, true);
+    assert.deepEqual(result.groups, []);
+  });
+
+  it("reports a missing path and a missing ref as NotFoundError", async () => {
+    await assert.rejects(
+      store.blame("demo", "src/nope.ts", { ref: "fix/TEST-1" }),
+      NotFoundError,
+    );
+    await assert.rejects(
+      store.blame("demo", "src/index.tsx", { ref: "no/such-branch" }),
+      NotFoundError,
+    );
+  });
+});
+
+describe("blame parsing and rendering", () => {
+  const sha1 = "a".repeat(40);
+  const sha2 = "b".repeat(40);
+
+  it("formats a blame timestamp with the author's own offset", () => {
+    assert.equal(blameDate(0, "+0000"), "1970-01-01T00:00:00+00:00");
+    assert.equal(blameDate(0, "+0100"), "1970-01-01T01:00:00+01:00");
+    assert.equal(blameDate(0, "-0530"), "1969-12-31T18:30:00-05:30");
+    assert.equal(blameDate(undefined, "+0100"), undefined);
+    assert.equal(blameDate(0, undefined), "1970-01-01T00:00:00.000Z");
+  });
+
+  const porcelain = [
+    `${sha1} 1 1 2`,
+    "author Ana",
+    "author-mail <ana@example.com>",
+    "author-time 1767323045",
+    "author-tz +0100",
+    "summary one",
+    "boundary",
+    "filename three.txt",
+    "\talpha",
+    `${sha1} 2 2`,
+    "\tbeta",
+    `${sha2} 3 3 1`,
+    "author Bo",
+    "author-mail <bo@example.com>",
+    "author-time 1767323045",
+    "author-tz +0100",
+    "summary two",
+    "filename three.txt",
+    "\tgamma",
+    `${sha1} 4 4 1`,
+    "\tdelta",
+  ].join("\n");
+
+  it("groups lines and caches a commit's metadata across groups", () => {
+    const groups = parseBlame(porcelain);
+    assert.equal(groups.length, 3);
+    assert.deepEqual(
+      groups.map((group) => group.lines.map((line) => line.line)),
+      [[1, 2], [3], [4]],
+    );
+    assert.equal(groups[0]?.author, "Ana");
+    assert.equal(groups[0]?.authorEmail, "ana@example.com");
+    assert.equal(groups[0]?.boundary, true);
+    assert.equal(groups[1]?.author, "Bo");
+    assert.equal(groups[2]?.commit, sha1);
+    assert.equal(groups[2]?.author, "Ana", "metadata is cached per sha, not per group");
+    assert.match(groups[2]?.date ?? "", /\+01:00$/);
+  });
+
+  it("parses a line spec, including an L prefix and a reversed range", () => {
+    assert.deepEqual(parseLineSpec("118"), { from: 118, to: 118 });
+    assert.deepEqual(parseLineSpec("L118-126"), { from: 118, to: 126 });
+    assert.deepEqual(parseLineSpec("126-118"), { from: 118, to: 126 });
+    assert.equal(parseLineSpec("0"), undefined);
+    assert.equal(parseLineSpec("1-"), undefined);
+    assert.equal(parseLineSpec("abc"), undefined);
+  });
+
+  const blameResult: BlameResult = {
+    project: "demo",
+    ref: "fix/TEST-1",
+    commit: sha1,
+    path: "src/renamed.ts",
+    binary: false,
+    groups: [
+      {
+        commit: sha1,
+        author: "Ana",
+        date: "2026-01-02T03:04:05+01:00",
+        summary: "one",
+        boundary: false,
+        lines: [
+          { line: 1, text: "\talpha" },
+          { line: 2, text: "beta" },
+        ],
+      },
+      {
+        commit: sha2,
+        author: "Bo",
+        date: "2026-01-01T00:00:00+00:00",
+        boundary: false,
+        lines: [{ line: 3, text: "gamma" }],
+      },
+    ],
+    fileLines: 8,
+    maxLines: 500,
+    truncated: false,
+    outputTruncated: false,
+    fetched: false,
+  };
+
+  it("renders groups, line ranges and flattened line text", () => {
+    const text = formatBlame(blameResult);
+    assert.match(
+      text,
+      /^<blame project="demo" ref="fix\/TEST-1" commit="a{40}" path="src\/renamed\.ts" file_lines="8" groups="2" count="3" max_lines="500"/,
+    );
+    assert.match(text, /\na{12}\tAna\t2026-01-02T03:04:05\+01:00\t1-2\n/);
+    assert.match(text, /\n  1:  alpha\n  2: beta\n/);
+    assert.match(text, /\nb{12}\tBo\t2026-01-01T00:00:00\+00:00\t3\n/);
+  });
+
+  it("explains a range past the end", () => {
+    const text = formatBlame({
+      ...blameResult,
+      groups: [],
+      lines: { from: 20, to: 25, fileLines: 8 },
+    });
+    assert.match(text, /\(no lines: the file has 8 lines, so 20-25 are past the end\)/);
+  });
+
+  it("marks a capped blame and a clamped range", () => {
+    const text = formatBlame({
+      ...blameResult,
+      groups: [{ ...blameResult.groups[0]!, lines: blameResult.groups[0]!.lines.slice(0, 1) }],
+      truncated: true,
+      lines: { from: 1, to: 20, availableFrom: 1, availableTo: 8, fileLines: 8 },
+    });
+    assert.match(text, /truncated="true"/);
+    assert.match(text, /\[truncated: showing the first 1 lines; raise "max_lines" for more\]/);
+    assert.match(text, /\[lines 1-20 were asked for; the file has 8, so 1-8 came back\]/);
   });
 });

@@ -53,6 +53,10 @@ export const HARD_LOG_LIMIT = 200;
 const HISTORY_MAX_BYTES = 5 * 1024 * 1024;
 /** Context lines `get_commit` asks for when it renders a patch. */
 export const DEFAULT_DIFF_CONTEXT = 3;
+/** Default number of blamed lines a result carries. */
+export const DEFAULT_BLAME_MAX_LINES = 500;
+/** Absolute cap on a blame, so one call cannot dump a whole large file. */
+export const HARD_BLAME_MAX_LINES = 5_000;
 /**
  * One `git log -z` record: full sha, short sha, parents, author, author date,
  * subject. `0x1f` separates fields and `0x1e` ends the record, because a subject
@@ -457,6 +461,57 @@ export interface CommitResult {
   patchTruncated: boolean;
   /** True when the byte cap cut the file list. */
   filesTruncated: boolean;
+  syncedAt?: Date;
+  fetched: boolean;
+  /** Set when the freshness check failed and this answer came from the cache. */
+  refreshError?: string;
+}
+
+/** How `blame` should be run. */
+export interface BlameOptions {
+  /** The ref to blame at. Omitted means the source's HEAD. */
+  ref?: string;
+  /** Restrict the blame to a 1-based, inclusive line range. */
+  lines?: LineRange;
+  maxLines?: number;
+}
+
+/** One blamed line: where it is in the file, and its text (a tab is literal). */
+export interface BlameLine {
+  line: number;
+  text: string;
+}
+
+/** Consecutive lines last touched by one commit. */
+export interface BlameGroup {
+  commit: string;
+  author?: string;
+  authorEmail?: string;
+  /** Author date, ISO 8601 with the author's own offset. */
+  date?: string;
+  summary?: string;
+  /** True when this commit is the root of the history git walked. */
+  boundary: boolean;
+  lines: BlameLine[];
+}
+
+export interface BlameResult {
+  project: string;
+  ref: string;
+  commit: string;
+  path: string;
+  /** True when the blob looks binary; the tool refuses to render one. */
+  binary: boolean;
+  groups: BlameGroup[];
+  fileLines: number;
+  /** Present when a line range was asked for: what it actually yielded. */
+  lines?: ReadLineRange;
+  /** The line cap this answer was rendered under. */
+  maxLines: number;
+  /** True when `maxLines` cut the answer. */
+  truncated: boolean;
+  /** True when the byte cap cut the output. */
+  outputTruncated: boolean;
   syncedAt?: Date;
   fetched: boolean;
   /** Set when the freshness check failed and this answer came from the cache. */
@@ -1007,6 +1062,127 @@ export function parseNumstat(output: string): NumstatEntry[] {
 /** Key that pairs a name-status row with its numstat row, renames included. */
 function fileKey(entry: { path: string; oldPath?: string }): string {
   return entry.oldPath === undefined ? entry.path : `${entry.oldPath}\u0000${entry.path}`;
+}
+
+/** Fields porcelain emits once per commit, cached while parsing a blame. */
+interface BlameMeta {
+  author?: string;
+  authorEmail?: string;
+  time?: number;
+  tz?: string;
+  summary?: string;
+  boundary?: boolean;
+}
+
+/**
+ * Format a blame timestamp the way `%aI` would: the author's own wall clock,
+ * with their offset. Porcelain gives epoch seconds plus `+0100`-style tz, not a
+ * ready-made ISO string.
+ */
+export function blameDate(epoch: number | undefined, tz: string | undefined): string | undefined {
+  if (epoch === undefined || !Number.isFinite(epoch)) {
+    return undefined;
+  }
+  const match = /^([+-])(\d{2})(\d{2})$/.exec(tz ?? "");
+  if (!match) {
+    return new Date(epoch * 1000).toISOString();
+  }
+  const sign = match[1] === "-" ? -1 : 1;
+  const shifted = new Date((epoch + sign * (Number(match[2]) * 60 + Number(match[3])) * 60) * 1000);
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  const offset = `${match[1] === "-" ? "-" : "+"}${match[2]}:${match[3]}`;
+  return (
+    `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}` +
+    `T${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}${offset}`
+  );
+}
+
+/**
+ * Parse `git blame --porcelain`.
+ *
+ * A full metadata block is emitted once per commit; later groups from the same
+ * commit carry only `<sha> <orig> <final> [<count>]`, so metadata is cached by
+ * sha — otherwise the second run of lines from one commit would lose its author.
+ * Consecutive lines from the same commit become one group; a group is broken by
+ * a different sha or a line-number jump. `boundary` and `previous` are read;
+ * only `boundary` is kept, and neither is rendered yet.
+ */
+export function parseBlame(output: string): BlameGroup[] {
+  const groups: BlameGroup[] = [];
+  const meta = new Map<string, BlameMeta>();
+  let group: BlameGroup | undefined;
+  let sha = "";
+  let lineNumber = 0;
+
+  for (const raw of output.split("\n")) {
+    if (raw.startsWith("\t")) {
+      if (group) {
+        group.lines.push({ line: lineNumber, text: raw.slice(1) });
+      }
+      continue;
+    }
+
+    const header = /^([0-9a-f]{40}) (\d+) (\d+)(?: (\d+))?$/.exec(raw);
+    if (header) {
+      sha = header[1] ?? "";
+      lineNumber = Number(header[3]);
+      const cached = meta.get(sha) ?? {};
+      meta.set(sha, cached);
+      if (!group || group.commit !== sha || (group.lines.at(-1)?.line ?? -1) + 1 !== lineNumber) {
+        group = {
+          commit: sha,
+          author: cached.author,
+          authorEmail: cached.authorEmail,
+          date: blameDate(cached.time, cached.tz),
+          summary: cached.summary,
+          boundary: cached.boundary ?? false,
+          lines: [],
+        };
+        groups.push(group);
+      }
+      continue;
+    }
+
+    if (!group) {
+      continue;
+    }
+    const field = /^(author|author-mail|author-time|author-tz|summary|boundary)(?: (.*))?$/.exec(raw);
+    if (!field) {
+      continue;
+    }
+    const cached = meta.get(sha) ?? {};
+    meta.set(sha, cached);
+    const value = field[2] ?? "";
+    switch (field[1]) {
+      case "author":
+        cached.author = value;
+        break;
+      case "author-mail":
+        cached.authorEmail = value.replace(/^</, "").replace(/>$/, "");
+        break;
+      case "author-time":
+        cached.time = Number(value);
+        break;
+      case "author-tz":
+        cached.tz = value;
+        break;
+      case "summary":
+        cached.summary = value;
+        break;
+      case "boundary":
+        cached.boundary = true;
+        break;
+      default:
+        continue;
+    }
+    group.author = cached.author;
+    group.authorEmail = cached.authorEmail;
+    group.date = blameDate(cached.time, cached.tz);
+    group.summary = cached.summary;
+    group.boundary = cached.boundary ?? false;
+  }
+
+  return groups;
 }
 
 /**
@@ -2190,6 +2366,142 @@ export class RepoStore {
       syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
       fetched,
       refreshError,
+    };
+  }
+
+  /**
+   * Blame a file at a ref: who last touched each line, grouped by commit.
+   *
+   * The blob is read first, and that read is not ceremony: it is how a binary
+   * file is detected (git blames one happily and emits NUL bytes in its lines —
+   * measured), how `file_lines` is known, and how a range running past the end
+   * is clamped instead of turning into a git fatal. Blame itself then runs over
+   * the clamped range only.
+   */
+  async blame(
+    project: string,
+    filePath: string,
+    options: BlameOptions = {},
+  ): Promise<BlameResult> {
+    const cleanProject = validateProject(project);
+    const cleanPath = validateRepoPath(filePath);
+
+    const source = await this.resolveSource(cleanProject);
+    const target = await this.targetRef(source, options.ref);
+    const { commit, fetched, refreshError, skipped } = await this.resolveWithFreshness(
+      cleanProject,
+      target.resolve,
+      source,
+    );
+    if (!commit) {
+      throw new NotFoundError(
+        await this.notFoundRefMessage(cleanProject, target.display, {
+          refreshError,
+          skipped,
+          sourceKind: source.kind,
+        }),
+      );
+    }
+
+    // A ranged blame needs the whole file to know where the range really ends,
+    // for the same reason a ranged read does. A whole-file blame is content to
+    // stop at the ordinary read cap.
+    const blob = await this.git.run(["show", `${commit}:${cleanPath}`], {
+      gitDir: source.gitDir,
+      maxBytes: options.lines ? HARD_FILE_MAX_BYTES : DEFAULT_FILE_MAX_BYTES,
+    });
+    if (blob.code !== 0) {
+      throw new NotFoundError(
+        `Path not found: "${cleanPath}" at "${target.display}" in ${cleanProject}.`,
+      );
+    }
+
+    const binary = blob.stdout.includes("\u0000");
+    const counted = sliceLines(blob.stdout, { from: 1, to: 0 });
+    const sliced = options.lines ? sliceLines(blob.stdout, options.lines) : undefined;
+    const maxLines = Math.min(
+      Math.max(options.maxLines ?? DEFAULT_BLAME_MAX_LINES, 1),
+      HARD_BLAME_MAX_LINES,
+    );
+    const syncMs = await this.sources.lastSyncAt(source.gitDir);
+
+    const base = {
+      project: cleanProject,
+      ref: target.display,
+      commit,
+      path: cleanPath,
+      binary,
+      fileLines: counted.fileLines,
+      lines: options.lines
+        ? {
+            from: options.lines.from,
+            to: options.lines.to,
+            availableFrom: sliced?.availableFrom,
+            availableTo: sliced?.availableTo,
+            fileLines: counted.fileLines,
+          }
+        : undefined,
+      maxLines,
+      syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
+      fetched,
+      refreshError,
+    };
+
+    if (binary || counted.fileLines === 0) {
+      return { ...base, groups: [], truncated: false, outputTruncated: blob.truncated };
+    }
+
+    const from = sliced?.availableFrom;
+    const to = sliced?.availableTo;
+    if (options.lines && (from === undefined || to === undefined)) {
+      // The whole range is past the end: an answer, not a git failure.
+      return { ...base, groups: [], truncated: false, outputTruncated: blob.truncated };
+    }
+
+    const found = await this.git.run(
+      [
+        "blame",
+        "--porcelain",
+        "-L",
+        `${from ?? 1},${to ?? counted.fileLines}`,
+        commit,
+        "--",
+        cleanPath,
+      ],
+      { gitDir: source.gitDir, maxBytes: HISTORY_MAX_BYTES },
+    );
+    if (found.code !== 0) {
+      throw new GitError(
+        `Failed to blame "${cleanPath}".`,
+        found.code,
+        this.redact(found.stderr).trim(),
+      );
+    }
+
+    let remaining = maxLines;
+    let truncated = false;
+    const groups: BlameGroup[] = [];
+    for (const group of parseBlame(found.stdout)) {
+      if (remaining <= 0) {
+        truncated = true;
+        break;
+      }
+      if (group.lines.length <= remaining) {
+        groups.push(group);
+        remaining -= group.lines.length;
+        continue;
+      }
+      groups.push({ ...group, lines: group.lines.slice(0, remaining) });
+      remaining = 0;
+      truncated = true;
+      break;
+    }
+
+    return {
+      ...base,
+      groups,
+      truncated,
+      outputTruncated: blob.truncated || found.truncated,
     };
   }
 
