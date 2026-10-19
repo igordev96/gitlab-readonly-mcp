@@ -12,7 +12,9 @@ import { Git } from "../src/git.js";
 import {
   NotFoundError,
   RepoStore,
+  parseGrepCounts,
   parseGrepMatches,
+  parseGrepPaths,
   parsePickaxeEntries,
   type PickaxeResult,
   type SearchResult,
@@ -85,6 +87,72 @@ describe("parseGrepMatches", () => {
   });
 });
 
+describe("parseGrepPaths", () => {
+  it("reads -l output, which is NUL-separated and has no newline at all", () => {
+    // Exactly what `git grep -l -z` produced under git 2.53: separated by NUL,
+    // ending with one, and with no newline anywhere — unlike a match record.
+    const rev = "a".repeat(40);
+    const output = `${rev}:src/a.ts\u0000${rev}:src/b.ts\u0000`;
+
+    assert.deepEqual(parseGrepPaths(output, rev), ["src/a.ts", "src/b.ts"]);
+  });
+
+  it("keeps a path containing a newline, which is the whole point of -z", () => {
+    const rev = "b".repeat(40);
+    assert.deepEqual(parseGrepPaths(`${rev}:we\nird.txt\u0000`, rev), ["we\nird.txt"]);
+  });
+
+  it("drops a final path the byte cap cut in half, because it lacks its NUL", () => {
+    const rev = "c".repeat(40);
+    const output = `${rev}:src/a.ts\u0000${rev}:src/incompl`;
+
+    assert.deepEqual(parseGrepPaths(output, rev), ["src/a.ts"]);
+  });
+
+  it("handles no matches, and ignores a field without the revision prefix", () => {
+    const rev = "d".repeat(40);
+    assert.deepEqual(parseGrepPaths("", rev), []);
+    assert.deepEqual(parseGrepPaths(`other:src/a.ts\u0000`, rev), []);
+  });
+});
+
+describe("parseGrepCounts", () => {
+  it("reads --count output, which is a pair per file like the match layout", () => {
+    // Exactly what `git grep --count -z` produced: `rev:path \0 count \n`, the
+    // count standing where a match's line number stands, and no text.
+    const rev = "a".repeat(40);
+    const output = `${rev}:src/a.ts\u00003\n${rev}:src/b.ts\u00001\n`;
+
+    assert.deepEqual(parseGrepCounts(output, rev), [
+      { path: "src/a.ts", count: 3 },
+      { path: "src/b.ts", count: 1 },
+    ]);
+  });
+
+  it("keeps a path containing a newline, and counts the file after it correctly", () => {
+    const rev = "b".repeat(40);
+    const output = `${rev}:we\nird.txt\u00007\n${rev}:src/b.ts\u00002\n`;
+
+    assert.deepEqual(parseGrepCounts(output, rev), [
+      { path: "we\nird.txt", count: 7 },
+      { path: "src/b.ts", count: 2 },
+    ]);
+  });
+
+  it("drops a zero, which -c prints for a pathspec that named a file with no match", () => {
+    const rev = "c".repeat(40);
+    const output = `${rev}:src/a.ts\u00000\n${rev}:src/b.ts\u00002\n`;
+
+    assert.deepEqual(parseGrepCounts(output, rev), [{ path: "src/b.ts", count: 2 }]);
+  });
+
+  it("handles no matches, and a count torn away by the byte cap", () => {
+    const rev = "d".repeat(40);
+    assert.deepEqual(parseGrepCounts("", rev), []);
+    assert.deepEqual(parseGrepCounts(`${rev}:src/a.ts\u0000`, rev), []);
+  });
+});
+
 describe("matchLine", () => {
   it("flattens tabs and trailing space", () => {
     assert.equal(matchLine("\tconst\tx = 1;\t \r"), " const x = 1;");
@@ -106,7 +174,9 @@ function searchResult(overrides: Partial<SearchResult> = {}): SearchResult {
     query: "hello",
     regex: false,
     caseSensitive: false,
+    output: "matches",
     matches: [],
+    fileHits: [],
     total: 0,
     files: 0,
     truncated: false,
@@ -179,6 +249,75 @@ describe("formatSearch", () => {
     assert.match(text, /regex="true" case_sensitive="true" path="src"/);
     assert.match(text, /refresh_failed="true"/);
     assert.match(text, /\[refresh failed: token rejected\]/);
+  });
+
+  it("renders files mode as one path per row, with no match lines", () => {
+    const text = formatSearch(
+      searchResult({
+        output: "files",
+        fileHits: [{ path: "src/a.ts" }, { path: "src/b.tsx" }],
+        total: undefined,
+        files: 2,
+      }),
+    );
+
+    assert.match(text, /output="files"/);
+    assert.match(text, /count="2" files="2"/);
+    assert.doesNotMatch(text, /total="/);
+    assert.match(text, /\nsrc\/a\.ts\nsrc\/b\.tsx\n<\/search>$/);
+  });
+
+  it("renders count mode as path and count, with the exact total", () => {
+    const text = formatSearch(
+      searchResult({
+        output: "count",
+        fileHits: [
+          { path: "src/a.ts", count: 3 },
+          { path: "src/b.tsx", count: 1 },
+        ],
+        total: 4,
+        files: 2,
+      }),
+    );
+
+    assert.match(text, /output="count"/);
+    assert.match(text, /count="2"/);
+    assert.match(text, /files="2"/);
+    assert.match(text, /\nsrc\/a\.ts\t3\nsrc\/b\.tsx\t1\n<\/search>$/);
+  });
+
+  it("says a capped files list is a capped list, and that the total still counts", () => {
+    const files = formatSearch(
+      searchResult({
+        output: "files",
+        fileHits: [{ path: "src/a.ts" }],
+        total: undefined,
+        files: 9,
+        truncated: true,
+      }),
+    );
+    assert.match(files, /count="1" files="9"/);
+    assert.match(files, /\[truncated: showing 1 of 9 files\]/);
+
+    const counts = formatSearch(
+      searchResult({
+        output: "count",
+        fileHits: [{ path: "src/a.ts", count: 3 }],
+        total: 42,
+        files: 9,
+        truncated: true,
+      }),
+    );
+    assert.match(counts, /count="1" total="42" files="9"/);
+    assert.match(counts, /\[truncated: showing 1 of 9 files; total counts every match\]/);
+  });
+
+  it("reports no matches the same way in every mode", () => {
+    for (const output of ["matches", "files", "count"] as const) {
+      const text = formatSearch(searchResult({ output, total: undefined, files: 0 }));
+      assert.match(text, /count="0" files="0"/);
+      assert.match(text, /\(no matches\)/);
+    }
   });
 });
 
@@ -382,6 +521,79 @@ describe("search over a fixture", () => {
     } finally {
       await store.removeRepo("demo");
     }
+  });
+});
+
+describe("search output modes over a fixture", () => {
+  it("answers files and count without a matched line, and agrees with matches", async () => {
+    const matchesMode = await store.search("demo", "export const", { ref: "fix/TEST-1" });
+    const filesMode = await store.search("demo", "export const", { ref: "fix/TEST-1", output: "files" });
+    const countMode = await store.search("demo", "export const", { ref: "fix/TEST-1", output: "count" });
+
+    assert.equal(matchesMode.output, "matches");
+    assert.equal(filesMode.output, "files");
+    assert.equal(countMode.output, "count");
+    assert.equal(filesMode.total, undefined, "files mode never asks git to count matches");
+
+    // The three are three views of one answer, so they have to line up.
+    assert.deepEqual(
+      filesMode.fileHits.map((hit) => hit.path),
+      countMode.fileHits.map((hit) => hit.path),
+    );
+    assert.equal(filesMode.files, matchesMode.files);
+    assert.equal(countMode.files, matchesMode.files);
+    assert.equal(countMode.total, matchesMode.total);
+    assert.equal(
+      countMode.fileHits.reduce((sum, hit) => sum + (hit.count ?? 0), 0),
+      matchesMode.total,
+      "-c counts matching lines, which is what a match list shows one row per",
+    );
+    assert.deepEqual(matchesMode.matches.map((match) => match.path), [
+      "src/components/Button.tsx",
+      "src/index.tsx",
+    ]);
+  });
+
+  it("caps the rows it shows while the totals stay exact", async () => {
+    const full = await store.search("demo", "export const", { ref: "fix/TEST-1", output: "count" });
+    const capped = await store.search("demo", "export const", {
+      ref: "fix/TEST-1",
+      output: "count",
+      maxMatches: 1,
+    });
+
+    assert.equal(capped.fileHits.length, 1);
+    assert.equal(capped.files, full.files, "the cap trims the rows, not the count of files");
+    assert.equal(capped.total, full.total, "nor the count of matches");
+    assert.equal(capped.truncated, true);
+    assert.equal(capped.outputTruncated, false);
+
+    const cappedFiles = await store.search("demo", "export const", {
+      ref: "fix/TEST-1",
+      output: "files",
+      maxMatches: 1,
+    });
+    assert.equal(cappedFiles.fileHits.length, 1);
+    assert.equal(cappedFiles.files, full.files);
+    assert.equal(cappedFiles.truncated, true);
+  });
+
+  it("returns nothing, and no invented total, when the cheap modes find nothing", async () => {
+    const files = await store.search("demo", "zzz_nothing_here_zzz", {
+      ref: "fix/TEST-1",
+      output: "files",
+    });
+    assert.deepEqual(files.fileHits, []);
+    assert.equal(files.files, 0);
+    assert.equal(files.total, undefined);
+    assert.equal(files.truncated, false);
+
+    const counts = await store.search("demo", "zzz_nothing_here_zzz", {
+      ref: "fix/TEST-1",
+      output: "count",
+    });
+    assert.deepEqual(counts.fileHits, []);
+    assert.equal(counts.total, 0);
   });
 });
 

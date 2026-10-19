@@ -205,6 +205,22 @@ export interface SearchOptions {
   /** Treat the query as POSIX extended regex (`-E`) rather than a literal (`-F`). */
   regex?: boolean;
   maxMatches?: number;
+  /**
+   * What to return: every match, or just which files (or how many each holds).
+   * Default `matches`. The cheap two never parse a matched line, so their totals
+   * stay exact where a match list would have been capped.
+   */
+  output?: SearchOutput;
+}
+
+/** Which shape a search returns. */
+export type SearchOutput = "matches" | "files" | "count";
+
+/** One file that matched, for the `files` and `count` outputs. */
+export interface FileHit {
+  path: string;
+  /** Matching lines in that file; absent in `files` mode, which does not count. */
+  count?: number;
 }
 
 /** One matching line, with the file it is in. */
@@ -227,16 +243,24 @@ export interface SearchResult {
   regex: boolean;
   caseSensitive: boolean;
   path?: string;
+  /** Which shape was asked for. */
+  output: SearchOutput;
+  /** `output: "matches"`: the matches, cut to `maxMatches`. Empty in the other modes. */
   matches: SearchMatch[];
-  /** Matches found, which is the true number unless the output was cut. */
-  total: number;
+  /** `output: "files"|"count"`: the files that matched, cut to `maxMatches`. */
+  fileHits: FileHit[];
+  /**
+   * Matches found, which is the true number unless the output was cut. Absent in
+   * `files` mode, which never asks git to count them.
+   */
+  total?: number;
   /**
    * Distinct files among *all* the matches found, not just the ones returned.
    * Counting only the returned slice would report `682 matches in 3 files`, which
    * reads as a fact about the repository and is not one.
    */
   files: number;
-  /** True when `maxMatches` hid matches, or the byte cap cut the output. */
+  /** True when `maxMatches` hid rows, or the byte cap cut the output. */
   truncated: boolean;
   /** True only for the byte cap: `total` and `files` are then lower bounds. */
   outputTruncated: boolean;
@@ -448,51 +472,105 @@ export function sliceLines(
 }
 
 /**
+ * Split `git grep -z` output into records of `width` fields.
+ *
+ * `-z` separates the fields with NUL but still ends each *record* with a newline,
+ * so a record's last field holds its own value *and* the first field of the next
+ * record, joined by that newline:
+ *
+ *   matches: `rev:path \0 line \0 text \n rev:path \0 line \0 text \n`
+ *   --count: `rev:path \0 count \n rev:path \0 count \n`
+ *
+ * Only that final field is cut, and only at its first newline: a path always sits
+ * in a field of its own, and a path may contain a newline — the very case `-z`
+ * exists for. A record the byte cap tore in half never completes and is dropped
+ * rather than guessed at.
+ */
+function zRecords(output: string, width: number): string[][] {
+  const tokens = output.split("\u0000");
+  const records: string[][] = [];
+  let record: string[] = [];
+
+  for (const token of tokens) {
+    if (record.length !== width - 1) {
+      record.push(token);
+      continue;
+    }
+
+    const join = token.indexOf("\n");
+    record.push(join === -1 ? token : token.slice(0, join));
+    records.push(record);
+    record = join === -1 ? [] : [token.slice(join + 1)];
+  }
+
+  return records;
+}
+
+/**
  * Parse `git grep --line-number -z` output.
  *
- * `-z` separates the fields with NUL but still terminates each record with a
- * newline, so a token after the first two holds one match's text *and* the next
- * match's path, joined by that newline:
- *
- *   `rev:path \0 line \0 text \n rev:path \0 line \0 text \n`
- *
- * The text is one line by definition, so the *first* newline in the token is
- * always the join — even when a path contains one, which is the case `-z` exists
- * for. The `rev:` prefix is stripped by exact match on the revision we passed,
- * so a path containing a colon survives. A record torn by the byte cap is
- * dropped rather than guessed at.
+ * The `rev:` prefix is stripped by exact match on the revision we passed, so a
+ * path containing a colon survives.
  */
 export function parseGrepMatches(output: string, rev: string): SearchMatch[] {
   const prefix = `${rev}:`;
-  const tokens = output.split("\u0000");
   const matches: SearchMatch[] = [];
 
-  let head = tokens[0];
-  for (let index = 1; index + 1 < tokens.length; index += 2) {
-    const line = Number.parseInt(tokens[index] ?? "", 10);
-    let text = tokens[index + 1] ?? "";
-    const join = text.indexOf("\n");
-    const next = join === -1 ? undefined : text.slice(join + 1);
-    if (join !== -1) {
-      text = text.slice(0, join);
-    }
-
+  for (const [head, lineField, text] of zRecords(output, 3)) {
+    const line = Number.parseInt(lineField ?? "", 10);
     if (head?.startsWith(prefix) && Number.isInteger(line)) {
       matches.push({
         path: head.slice(prefix.length),
         line,
-        text: text.replace(/\r$/, ""),
+        text: (text ?? "").replace(/\r$/, ""),
       });
     }
-
-    // No join means this was the last record; anything past it is a torn tail.
-    if (next === undefined) {
-      break;
-    }
-    head = next;
   }
 
   return matches;
+}
+
+/**
+ * Parse `git grep -l -z` output: `rev:path \0` per file.
+ *
+ * This one is not a `zRecords` shape at all: with `-l` git writes no newline after
+ * a record, so every field is complete path and the only separator is the NUL. A
+ * complete listing ends with one, so a non-empty final element is a path the byte
+ * cap cut in half — it is dropped rather than reported as a file that does not
+ * exist. A path containing a newline is safe for exactly the reason a truncated
+ * one is dangerous: the NUL is the separator, and nothing else is.
+ */
+export function parseGrepPaths(output: string, rev: string): string[] {
+  const prefix = `${rev}:`;
+  const tokens = output.split("\u0000");
+  // The final element is either the empty tail after the last NUL, or a torn path.
+  // Either way it is not a path and goes.
+  tokens.pop();
+  return tokens
+    .filter((token) => token.startsWith(prefix))
+    .map((token) => token.slice(prefix.length));
+}
+
+/**
+ * Parse `git grep --count -z` output: `rev:path \0 count \n` per file that matched.
+ *
+ * The count is the number of matching *lines*, which is what a match list would
+ * have shown one row per, so the two modes agree. A zero is dropped: `git grep -c`
+ * prints one for a file a pathspec named but that did not match, and that is not a
+ * file with a match in it.
+ */
+export function parseGrepCounts(output: string, rev: string): FileHit[] {
+  const prefix = `${rev}:`;
+  const hits: FileHit[] = [];
+
+  for (const [head, countField] of zRecords(output, 2)) {
+    const count = Number.parseInt(countField ?? "", 10);
+    if (head?.startsWith(prefix) && Number.isInteger(count) && count > 0) {
+      hits.push({ path: head.slice(prefix.length), count });
+    }
+  }
+
+  return hits;
 }
 
 /**
@@ -1248,7 +1326,17 @@ export class RepoStore {
       );
     }
 
-    const args = ["grep", "--line-number", "-z", "-I", "--no-color"];
+    const output = options.output ?? "matches";
+    const args = ["grep", "-z", "-I", "--no-color"];
+    // `-l` and `--count` answer the question without emitting a matched line, which
+    // is what keeps a broad query cheap — and what keeps its totals exact.
+    if (output === "matches") {
+      args.push("--line-number");
+    } else if (output === "files") {
+      args.push("-l");
+    } else {
+      args.push("--count");
+    }
     args.push(options.regex ? "-E" : "-F");
     if (!options.caseSensitive) {
       args.push("-i");
@@ -1269,11 +1357,9 @@ export class RepoStore {
       );
     }
 
-    const parsed = parseGrepMatches(found.stdout, commit);
     const limit = Math.min(options.maxMatches ?? DEFAULT_MAX_MATCHES, HARD_MAX_MATCHES);
     const syncMs = await this.sources.lastSyncAt(source.gitDir);
-
-    return {
+    const shape = {
       project: cleanProject,
       ref: target.display,
       commit,
@@ -1281,14 +1367,46 @@ export class RepoStore {
       regex: options.regex ?? false,
       caseSensitive: options.caseSensitive ?? false,
       path: cleanPath,
+      output,
+      syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
+      fetched,
+      refreshError,
+    };
+
+    if (output === "files") {
+      const paths = parseGrepPaths(found.stdout, commit);
+      return {
+        ...shape,
+        matches: [],
+        fileHits: paths.slice(0, limit).map((path) => ({ path })),
+        files: paths.length,
+        truncated: paths.length > limit || found.truncated,
+        outputTruncated: found.truncated,
+      };
+    }
+
+    if (output === "count") {
+      const hits = parseGrepCounts(found.stdout, commit);
+      return {
+        ...shape,
+        matches: [],
+        fileHits: hits.slice(0, limit),
+        total: hits.reduce((sum, hit) => sum + (hit.count ?? 0), 0),
+        files: hits.length,
+        truncated: hits.length > limit || found.truncated,
+        outputTruncated: found.truncated,
+      };
+    }
+
+    const parsed = parseGrepMatches(found.stdout, commit);
+    return {
+      ...shape,
       matches: parsed.length > limit ? parsed.slice(0, limit) : parsed,
+      fileHits: [],
       total: parsed.length,
       files: new Set(parsed.map((match) => match.path)).size,
       truncated: parsed.length > limit || found.truncated,
       outputTruncated: found.truncated,
-      syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
-      fetched,
-      refreshError,
     };
   }
 

@@ -39,18 +39,27 @@ export function matchLine(text: string): string {
   return `${flat.slice(0, MATCH_LINE_CHARS)}… [+${hidden} characters]`;
 }
 
-/** Render a search: a provenance header, then the matches grouped by file. */
+/**
+ * Render a search: a provenance header, then the rows the mode asked for.
+ *
+ * `count` is always the number of rows in the body, `files` is always the number
+ * of files that matched, and `total` — when it appears — is the number of matches.
+ * Keeping the three the same shape in every mode is worth the odd repeated number:
+ * a header whose meaning depended on the mode would be worse than a longer one.
+ */
 export function formatSearch(result: SearchResult): string {
+  const shown = result.output === "matches" ? result.matches.length : result.fileHits.length;
   const attributes = [
     `project="${result.project}"`,
     `ref="${result.ref}"`,
     `commit="${result.commit}"`,
     `query="${sanitize(result.query)}"`,
+    result.output !== "matches" ? `output="${result.output}"` : undefined,
     result.regex ? 'regex="true"' : undefined,
     result.caseSensitive ? 'case_sensitive="true"' : undefined,
     result.path ? `path="${sanitize(result.path)}"` : undefined,
-    `count="${result.matches.length}"`,
-    result.total !== result.matches.length ? `total="${result.total}"` : undefined,
+    `count="${shown}"`,
+    result.total !== undefined && result.total !== shown ? `total="${result.total}"` : undefined,
     `files="${result.files}"`,
     result.syncedAt ? `synced_at="${result.syncedAt.toISOString()}"` : SYNCED_AT_UNKNOWN,
     result.refreshError ? 'refresh_failed="true"' : undefined,
@@ -59,13 +68,23 @@ export function formatSearch(result: SearchResult): string {
     .join(" ");
 
   const lines: string[] = [];
-  let current: string | undefined;
-  for (const match of result.matches) {
-    if (match.path !== current) {
-      lines.push(match.path);
-      current = match.path;
+  if (result.output === "matches") {
+    let current: string | undefined;
+    for (const match of result.matches) {
+      if (match.path !== current) {
+        lines.push(match.path);
+        current = match.path;
+      }
+      lines.push(`  ${match.line}: ${matchLine(match.text)}`);
     }
-    lines.push(`  ${match.line}: ${matchLine(match.text)}`);
+  } else if (result.output === "files") {
+    for (const hit of result.fileHits) {
+      lines.push(hit.path);
+    }
+  } else {
+    for (const hit of result.fileHits) {
+      lines.push(`${hit.path}\t${hit.count ?? 0}`);
+    }
   }
   const body = lines.length > 0 ? lines.join("\n") : "(no matches)";
 
@@ -76,7 +95,13 @@ export function formatSearch(result: SearchResult): string {
     footer +=
       "\n[truncated: the search output was cut at the size limit, so every count here is a lower bound]";
   } else if (result.truncated) {
-    footer += `\n[truncated: showing ${result.matches.length} of ${result.total} matches]`;
+    if (result.output === "files") {
+      footer += `\n[truncated: showing ${shown} of ${result.files} files]`;
+    } else if (result.output === "count") {
+      footer += `\n[truncated: showing ${shown} of ${result.files} files; total counts every match]`;
+    } else {
+      footer += `\n[truncated: showing ${shown} of ${result.total ?? shown} matches]`;
+    }
   }
   footer += refreshFailedNote(result.refreshError);
 
@@ -128,6 +153,9 @@ export function registerSearchTools(server: McpServer, store: RepoStore, config:
       description:
         "Search a whole file tree at a branch, tag, or commit — `git grep` — without cloning it into a " +
         "working tree. Matches come back grouped by file: the path, then `line: text` for each hit. " +
+        "Set `output` to `files` or `count` when you want to know which files, or how many hits each " +
+        "holds, rather than read the lines: those two ask git not to emit a matched line at all, so " +
+        "they stay cheap and their totals stay exact on a broad query. " +
         "Matching is literal (`foo|bar` matches that text, not `foo` or `bar`) and case-insensitive " +
         "unless you say otherwise; the ref defaults to the repository's default branch. " +
         "The ref is resolved before searching, so a branch created moments ago is fetched on the miss, " +
@@ -175,11 +203,22 @@ export function registerSearchTools(server: McpServer, store: RepoStore, config:
           .positive()
           .max(HARD_MAX_MATCHES)
           .optional()
-          .describe(`Maximum matches to return (default ${DEFAULT_MAX_MATCHES}).`),
+          .describe(
+            `Maximum rows to return (default ${DEFAULT_MAX_MATCHES}): matches, or files in the other modes. Tops them out; the totals in the header stay exact.`,
+          ),
+        output: z
+          .enum(["matches", "files", "count"])
+          .optional()
+          .describe(
+            "What to return. Default 'matches': the matching lines, grouped by file. 'files': just the " +
+              "paths that matched. 'count': the path and matching-line count per file, with an exact " +
+              "'total'. The last two skip emitting matched lines, so they are cheaper and stay exact on a " +
+              "broad query.",
+          ),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ query, project, ref, path, case_sensitive, regex, max_matches }) => {
+    async ({ query, project, ref, path, case_sensitive, regex, max_matches, output }) => {
       const target = project?.trim() || config.defaultProject;
       if (!target) {
         return errorResult(NO_PROJECT);
@@ -192,6 +231,7 @@ export function registerSearchTools(server: McpServer, store: RepoStore, config:
           caseSensitive: case_sensitive,
           regex,
           maxMatches: max_matches,
+          output,
         });
         return textResult(formatSearch(result));
       } catch (error) {

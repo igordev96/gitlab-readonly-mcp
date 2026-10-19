@@ -103,6 +103,14 @@ describe("MCP protocol", () => {
     );
     assert.match(textOf(found), /src\/components\/Button\.tsx/);
 
+    const counted = await client.callTool({
+      name: "search",
+      arguments: { project: "demo", ref: "fix/TEST-1", query: "export const", output: "count" },
+    });
+    assert.equal(counted.isError, undefined);
+    assert.match(textOf(counted), /output="count" count="2" files="2"/);
+    assert.match(textOf(counted), /\nsrc\/index\.tsx\t1\n/);
+
     const history = await client.callTool({
       name: "pickaxe",
       arguments: { project: "demo", ref: "fix/TEST-1", query: "Button" },
