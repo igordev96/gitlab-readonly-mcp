@@ -8,7 +8,8 @@
 > runbook — lives in [`history.md`](history.md). Keep the two apart: this file
 > should not grow as phases land.
 
-Status: phases 0, 1, 2a, 2b, 2c-1, 2c-2, 3, 4a and 4b are released; the newest tag
+Status: phases 0, 1, 2a, 2b, 2c-1, 2c-2, 3, 4a and 4b are released, and phase 5
+(documentation) is done. The newest tag
 is `v0.10.0` (diffs and history). Phase 3 was verified live on 2026-10-19.
 Sixteen tools are implemented: the four reads
 `get_file`, `list_tree`, `list_refs` and `resolve_ref` — exercised against the real
@@ -607,57 +608,20 @@ found, and a code change only where a check fails.
 | 3d | Links and release: `/-/commit/`, `/-/commits/` and `/-/blame/` links accepted by the tools that make them readable; docs; `v0.10.0` | A pasted commit or blame link works with no hand decoding, and the phase is released |
 | 4a | Search: `search` (`git grep`) and `pickaxe` (`git log -S`) | "Where is this used on `fix/PROJ-7608`, and when did it appear?" answered without a clone |
 | 4b | Polish: GitLab URLs (`parse_gitlab_url`, `url` on `get_file`/`list_tree`, line anchors), `search` output modes and match context, the `cloneStrategy` refusal, truncation and stale-visibility review | A pasted GitLab blob link reads the file — and the line range it names — with no hand decoding; a broad search answers "how many, in which files" without parsing every match; a policy value nothing honours is refused by name rather than stored and ignored |
+| 5 | Documentation: the README as the user's entry point, `docs/internals.md` for behaviour, `docs/development.md` for build/test/release, and one home per fact | Newcomers install, configure and find what to ask for without reading the design or the release ritual; every semantic fact has one prose home plus the code, and the README's examples are the output the tools actually print |
 
-> **Status:** phases 0, 1, 2a, 2b, 2c-1, 2c-2, 3, 4a and 4b are released. Phase 3
-> (diff and history) was verified live on 2026-10-19, including the link shapes 3d
-> added; the newest tag is `v0.10.0`. The
+> **Status:** phases 0, 1, 2a, 2b, 2c-1, 2c-2, 3, 4a and 4b are released, and phase
+> 5 (documentation) is done. Phase 3 was verified live on 2026-10-19, including the
+> link shapes 3d added; the newest tag is `v0.10.0`. Phase 5 changes no server
+> behaviour, so it takes no release. The
 > design, including what was measured, is the section before this table, and each
 > step's outcome is recorded in [`history.md`](history.md).
 
 ### Source layout
 
-```
-src/
-  index.ts       # stdio bootstrap
-  server.ts      # McpServer + tool registration
-  config.ts      # env, host, cache dir, default project, fetch policy
-  git.ts         # safe git exec wrapper (array args, no shell)
-  gitDiagnostics.ts  # classify git stderr into an actionable hint
-  repoStore.ts   # project -> source resolution, refs, trees, freshness policy
-  sources.ts     # mirror paths, clone, fetch, per-source lock, the sync clock
-  registry.ts    # repos.json: per-project source and freshness policy
-  url.ts         # GitLab web URL -> {project, target, rest, lines}     ✅ Phase 4b/3d
-  tools/
-    result.ts      # shared tool result shapes and error rendering
-    files.ts       # get_file, list_tree (+ `url`)                  ✅ Phase 2b-2/4b
-    url.ts         # parse_gitlab_url, formatUrl, link routing       ✅ Phase 4b/3d
-    refs.ts        # list_refs, resolve_ref                        ✅ Phase 2b-1
-    repos.ts       # list_repos, sync_repo, add_repo, remove_repo   ✅ Phase 2c-1/2c-2
-    history.ts     # log, get_commit, blame, compare, diff_file (+ `url`) ✅ Phase 3
-    search.ts      # search (git grep), pickaxe (git log -S)        ✅ Phase 4a
-test/
-  fixture.ts     # builds a throwaway "GitLab" (working repo + bare server)
-  store.test.ts  # source resolution, guards, freshness, project policy
-  registry.test.ts  # the registry file: parsing, persistence, corrupt handling
-  local.test.ts  # local-clone sources: reading, misses, path and delete guards
-  refs.test.ts   # ref listing, resolution, close matches
-  tree.test.ts   # directory listings, the ls-tree parser, rendering
-  search.test.ts # grep and log -S: parsers, rendering, fixture reads
-  history.test.ts # log, get_commit, blame, compare and diff_file
-  url.test.ts    # GitLab URL shapes, ref resolution, line anchors, link routing
-  repos.test.ts  # rendering the registry listing
-  git.test.ts    # the git wrapper
-  gitDiagnostics.test.ts  # git stderr -> actionable hint
-  protocol.test.ts   # the MCP surface over an in-memory transport
-  startup.test.ts    # the compiled entry point over real stdio
-tsconfig.json        # typecheck: src/ + test/, noEmit
-tsconfig.build.json  # emit: src/ only -> dist/
-```
-
-Tests import `src/` directly and run through `tsx` on Node's built-in test
-runner, so no build is needed to get feedback and a stale `dist/` can never be
-tested by accident. `npm test` builds first so the compiled entry point is still
-covered. See `history.md` for why this shape was chosen.
+The `src/` and `test/` tree, with what each file owns, is kept in
+[`development.md`](development.md), beside the build and test instructions it
+belongs with. There is one copy, so it cannot drift from the code's own shape.
 
 Stack: TypeScript, `@modelcontextprotocol/sdk`, `zod` for input schemas, Node
 child_process `spawn` (array args) for git.
