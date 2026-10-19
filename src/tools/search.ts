@@ -2,12 +2,15 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Config } from "../config.js";
 import {
+  CONTEXT_MAX_FILES,
   DEFAULT_MAX_MATCHES,
   DEFAULT_PICKAXE_LIMIT,
+  HARD_CONTEXT_RADIUS,
   HARD_MAX_MATCHES,
   NotFoundError,
   type PickaxeResult,
   type RepoStore,
+  type SearchMatch,
   type SearchResult,
 } from "../repoStore.js";
 import {
@@ -61,6 +64,7 @@ export function formatSearch(result: SearchResult): string {
     `count="${shown}"`,
     result.total !== undefined && result.total !== shown ? `total="${result.total}"` : undefined,
     `files="${result.files}"`,
+    result.context ? `context="${result.context.radius}"` : undefined,
     result.syncedAt ? `synced_at="${result.syncedAt.toISOString()}"` : SYNCED_AT_UNKNOWN,
     result.refreshError ? 'refresh_failed="true"' : undefined,
   ]
@@ -69,13 +73,41 @@ export function formatSearch(result: SearchResult): string {
 
   const lines: string[] = [];
   if (result.output === "matches") {
-    let current: string | undefined;
+    // Grouped once, rather than filtered per match: a file's context replaces all
+    // of its match rows, so each file has to be visited exactly once.
+    const groups = new Map<string, SearchMatch[]>();
     for (const match of result.matches) {
-      if (match.path !== current) {
-        lines.push(match.path);
-        current = match.path;
+      const group = groups.get(match.path);
+      if (group) {
+        group.push(match);
+      } else {
+        groups.set(match.path, [match]);
       }
-      lines.push(`  ${match.line}: ${matchLine(match.text)}`);
+    }
+    const contexts = new Map((result.context?.files ?? []).map((entry) => [entry.path, entry]));
+
+    for (const [path, group] of groups) {
+      lines.push(path);
+      const context = contexts.get(path);
+      if (context && context.lines.length > 0) {
+        let previous: number | undefined;
+        for (const line of context.lines) {
+          // A break between hunks, so a far-away match cannot read as adjacent.
+          if (previous !== undefined && line.line > previous + 1) {
+            lines.push("  …");
+          }
+          lines.push(`${line.matched ? ">" : " "} ${line.line}: ${matchLine(line.text)}`);
+          previous = line.line;
+        }
+        continue;
+      }
+
+      for (const match of group) {
+        lines.push(`  ${match.line}: ${matchLine(match.text)}`);
+      }
+      if (context?.note) {
+        lines.push(`  [no context: ${context.note}]`);
+      }
     }
   } else if (result.output === "files") {
     for (const hit of result.fileHits) {
@@ -163,6 +195,8 @@ export function registerSearchTools(server: McpServer, store: RepoStore, config:
         "`path` is a git pathspec, passed through as git defines it: `src/components/*.tsx` works, but a " +
         "plain pathspec's `**` needs at least one directory level — use `:(glob)src/**/*.tsx` for zero or " +
         "more. A path that matches nothing simply returns no matches. " +
+        "Pass `context` to see the lines around each match: the hunk is numbered and matched lines are marked " +
+        "`>`, which git's own context flags cannot do here — under `-z` they lose which line matched. " +
         "Use `pickaxe` to find *when* the text appeared.",
       inputSchema: {
         query: z
@@ -215,10 +249,22 @@ export function registerSearchTools(server: McpServer, store: RepoStore, config:
               "'total'. The last two skip emitting matched lines, so they are cheaper and stay exact on a " +
               "broad query.",
           ),
+        context: z
+          .number()
+          .int()
+          .positive()
+          .max(HARD_CONTEXT_RADIUS)
+          .optional()
+          .describe(
+            "Lines to show on each side of every match (default 0, none), marked so a matched line is " +
+              "distinguishable from a nearby one. Built by reading each displayed file once — at most " +
+              `${CONTEXT_MAX_FILES} files per call — because git's own context flags lose which line ` +
+              "matched under -z. Needs output 'matches'.",
+          ),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ query, project, ref, path, case_sensitive, regex, max_matches, output }) => {
+    async ({ query, project, ref, path, case_sensitive, regex, max_matches, output, context }) => {
       const target = project?.trim() || config.defaultProject;
       if (!target) {
         return errorResult(NO_PROJECT);
@@ -232,6 +278,7 @@ export function registerSearchTools(server: McpServer, store: RepoStore, config:
           regex,
           maxMatches: max_matches,
           output,
+          context,
         });
         return textResult(formatSearch(result));
       } catch (error) {

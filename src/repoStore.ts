@@ -18,6 +18,13 @@ export const HARD_MAX_ENTRIES = 5_000;
 export const DEFAULT_MAX_MATCHES = 100;
 /** Absolute cap on a search, so one call can never dump an unbounded result. */
 export const HARD_MAX_MATCHES = 2_000;
+/** Lines of context a search may ask for on each side of a match. */
+export const HARD_CONTEXT_RADIUS = 50;
+/**
+ * How many displayed files a context search reads. Each one costs a `git show`,
+ * so the budget is per call rather than per match.
+ */
+export const CONTEXT_MAX_FILES = 20;
 /** Default number of commits `pickaxe` returns. */
 export const DEFAULT_PICKAXE_LIMIT = 20;
 /** Byte cap for search output; the match cap usually bites first. */
@@ -206,6 +213,16 @@ export interface SearchOptions {
   regex?: boolean;
   maxMatches?: number;
   /**
+   * Lines of context around each displayed match. Default 0, none.
+   *
+   * git can emit context itself (`-C`), but under `-z` it writes the context in
+   * the match layout, so nothing distinguishes a matched line from a nearby one.
+   * Reading the file once per displayed file is what keeps that distinction — and
+   * it is why `context` needs `output: "matches"`, and stops at
+   * `CONTEXT_MAX_FILES`.
+   */
+  context?: number;
+  /**
    * What to return: every match, or just which files (or how many each holds).
    * Default `matches`. The cheap two never parse a matched line, so their totals
    * stay exact where a match list would have been capped.
@@ -232,6 +249,30 @@ export interface SearchMatch {
   text: string;
 }
 
+/** One line of a context hunk: its number, its text, and whether it matched. */
+export interface ContextLine {
+  line: number;
+  text: string;
+  matched: boolean;
+}
+
+/** The lines shown around the matches in one file. */
+export interface FileContext {
+  path: string;
+  /** Merged, ascending ranges around the displayed matches; empty when `note` says why. */
+  lines: ContextLine[];
+  /** Why `lines` is empty, when it is: the file was not read, or not among the first few. */
+  note?: string;
+}
+
+/** Match context for a whole result. */
+export interface MatchContext {
+  /** Lines of context on each side of a match, as asked for. */
+  radius: number;
+  /** One entry per displayed file, in the order the matches came back. */
+  files: FileContext[];
+}
+
 export interface SearchResult {
   project: string;
   /** The ref that was searched: the one asked for, or the source's HEAD. */
@@ -249,6 +290,8 @@ export interface SearchResult {
   matches: SearchMatch[];
   /** `output: "files"|"count"`: the files that matched, cut to `maxMatches`. */
   fileHits: FileHit[];
+  /** Match context, present only when it was asked for. */
+  context?: MatchContext;
   /**
    * Matches found, which is the true number unless the output was cut. Absent in
    * `files` mode, which never asks git to count them.
@@ -571,6 +614,69 @@ export function parseGrepCounts(output: string, rev: string): FileHit[] {
   }
 
   return hits;
+}
+
+/**
+ * Merge the windows around each matched line into ascending, non-overlapping
+ * ranges, clamped to the file.
+ *
+ * Two windows that touch or overlap become one, so a run of nearby matches is
+ * shown once rather than once per match — which is what stops a file with a match
+ * on every line from repeating the same lines a hundred times.
+ */
+export function contextRanges(
+  matchLines: number[],
+  radius: number,
+  fileLines: number,
+): { from: number; to: number }[] {
+  const ranges: { from: number; to: number }[] = [];
+  const ascending = [...new Set(matchLines)].sort((left, right) => left - right);
+
+  for (const line of ascending) {
+    const from = Math.max(1, line - radius);
+    const to = Math.min(fileLines, line + radius);
+    if (to < from) {
+      continue;
+    }
+    const last = ranges[ranges.length - 1];
+    if (last && from <= last.to + 1) {
+      last.to = Math.max(last.to, to);
+    } else {
+      ranges.push({ from, to });
+    }
+  }
+
+  return ranges;
+}
+
+/**
+ * Turn a file's text into the lines its ranges cover, in order, marking the
+ * matched ones. A trailing `\r` is dropped, so a CRLF file reads like the match
+ * rows do — the renderer flattens both through the same function.
+ */
+export function contextLines(
+  fileText: string,
+  matchLines: number[],
+  radius: number,
+): ContextLine[] {
+  const all = fileText.split("\n");
+  // A file ending in a newline splits into a phantom last element.
+  if (all[all.length - 1] === "") {
+    all.pop();
+  }
+
+  const matched = new Set(matchLines);
+  const lines: ContextLine[] = [];
+  for (const range of contextRanges(matchLines, radius, all.length)) {
+    for (let number = range.from; number <= range.to; number += 1) {
+      lines.push({
+        line: number,
+        text: (all[number - 1] ?? "").replace(/\r$/, ""),
+        matched: matched.has(number),
+      });
+    }
+  }
+  return lines;
 }
 
 /**
@@ -1292,6 +1398,75 @@ export class RepoStore {
   }
 
   /**
+   * Read each displayed file once, and cut the ranges around its matches.
+   *
+   * A file is read to the hard byte cap rather than the caller's: context around
+   * line 9000 of a 4 MB file is not reachable inside a 200 KB read, and the range
+   * is the point. The twenty reads happen one after another — they are local
+   * object-store reads, and a burst of them buys nothing but memory.
+   */
+  private async contextFor(
+    source: GitSource,
+    commit: string,
+    radius: number,
+    matches: SearchMatch[],
+  ): Promise<MatchContext> {
+    const byPath = new Map<string, number[]>();
+    for (const match of matches) {
+      const lines = byPath.get(match.path);
+      if (lines) {
+        lines.push(match.line);
+      } else {
+        byPath.set(match.path, [match.line]);
+      }
+    }
+
+    const files: FileContext[] = [];
+    let read = 0;
+    for (const [path, lines] of byPath) {
+      if (read >= CONTEXT_MAX_FILES) {
+        files.push({
+          path,
+          lines: [],
+          note: `context reads the first ${CONTEXT_MAX_FILES} files; this one shows its matches only`,
+        });
+        continue;
+      }
+      read += 1;
+
+      const shown = await this.git.run(["show", `${commit}:${path}`], {
+        gitDir: source.gitDir,
+        maxBytes: HARD_FILE_MAX_BYTES,
+      });
+      if (shown.code !== 0) {
+        const reason = this.redact(shown.stderr).trim().split("\n")[0] ?? "";
+        files.push({
+          path,
+          lines: [],
+          note: reason ? `the file could not be read: ${reason}` : "the file could not be read",
+        });
+        continue;
+      }
+      if (shown.stdout.includes("\u0000")) {
+        files.push({ path, lines: [], note: "the file is binary, so there are no lines to show" });
+        continue;
+      }
+      if (shown.truncated) {
+        files.push({
+          path,
+          lines: [],
+          note: `the file is larger than ${HARD_FILE_MAX_BYTES} bytes, so it was not read for context`,
+        });
+        continue;
+      }
+
+      files.push({ path, lines: contextLines(shown.stdout, lines, radius) });
+    }
+
+    return { radius, files };
+  }
+
+  /**
    * Search the tree of one ref: `git grep`.
    *
    * The ref is resolved first, with the same freshness rules as a read — and
@@ -1308,6 +1483,19 @@ export class RepoStore {
     const cleanProject = validateProject(project);
     const cleanQuery = validateQuery(query);
     const cleanPath = options.path === undefined ? undefined : validateRepoPath(options.path);
+    const output = options.output ?? "matches";
+    const radius =
+      options.context === undefined
+        ? 0
+        : Math.min(Math.max(Math.trunc(options.context), 0), HARD_CONTEXT_RADIUS);
+
+    // Checked before the ref is resolved: a bad pairing should cost nothing, and
+    // the two cheap modes have no matched line for context to sit next to.
+    if (radius > 0 && output !== "matches") {
+      throw new Error(
+        `context needs output "matches": "${output}" has no matched lines to put context around.`,
+      );
+    }
 
     const source = await this.resolveSource(cleanProject);
     const target = await this.targetRef(source, options.ref);
@@ -1326,7 +1514,6 @@ export class RepoStore {
       );
     }
 
-    const output = options.output ?? "matches";
     const args = ["grep", "-z", "-I", "--no-color"];
     // `-l` and `--count` answer the question without emitting a matched line, which
     // is what keeps a broad query cheap — and what keeps its totals exact.
@@ -1399,14 +1586,18 @@ export class RepoStore {
     }
 
     const parsed = parseGrepMatches(found.stdout, commit);
+    const shown = parsed.length > limit ? parsed.slice(0, limit) : parsed;
     return {
       ...shape,
-      matches: parsed.length > limit ? parsed.slice(0, limit) : parsed,
+      matches: shown,
       fileHits: [],
       total: parsed.length,
       files: new Set(parsed.map((match) => match.path)).size,
       truncated: parsed.length > limit || found.truncated,
       outputTruncated: found.truncated,
+      // Context follows what is displayed, not everything found: reading files the
+      // answer cannot show would be work nobody sees.
+      context: radius > 0 ? await this.contextFor(source, commit, radius, shown) : undefined,
     };
   }
 

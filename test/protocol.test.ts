@@ -111,6 +111,14 @@ describe("MCP protocol", () => {
     assert.match(textOf(counted), /output="count" count="2" files="2"/);
     assert.match(textOf(counted), /\nsrc\/index\.tsx\t1\n/);
 
+    const withContext = await client.callTool({
+      name: "search",
+      arguments: { project: "demo", ref: "fix/TEST-1", query: "export const", context: 1 },
+    });
+    assert.equal(withContext.isError, undefined);
+    assert.match(textOf(withContext), /context="1"/);
+    assert.match(textOf(withContext), /\n> 1: export const hello = 'fix\/TEST-1';\n/);
+
     const history = await client.callTool({
       name: "pickaxe",
       arguments: { project: "demo", ref: "fix/TEST-1", query: "Button" },

@@ -3,6 +3,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,6 +13,8 @@ import { Git } from "../src/git.js";
 import {
   NotFoundError,
   RepoStore,
+  contextLines,
+  contextRanges,
   parseGrepCounts,
   parseGrepMatches,
   parseGrepPaths,
@@ -20,9 +23,61 @@ import {
   type SearchResult,
 } from "../src/repoStore.js";
 import { formatPickaxe, formatSearch, matchLine } from "../src/tools/search.js";
-import { buildFixture, commitOnBranch, publishBranchFromElsewhere } from "./fixture.js";
+import { addBranchWithFile, buildFixture, commitOnBranch, publishBranchFromElsewhere } from "./fixture.js";
 
 const fixture = buildFixture(path.join(os.tmpdir(), "glmcp-fixture-search"));
+
+/** A file worth putting context around: a run of matches, a gap, and the last line. */
+const CONTEXT_FILE =
+  [
+    "header",
+    "alpha one",
+    "alpha two",
+    "middle one",
+    "body five",
+    "body six",
+    "body seven",
+    "body eight",
+    "body nine",
+    "alpha three",
+    "body eleven",
+    "body twelve",
+    "body thirteen",
+    "body fourteen",
+    "alpha last",
+  ].join("\n") + "\n";
+
+addBranchWithFile(fixture.work, "feat/CONTEXT", "ctx.txt", CONTEXT_FILE, "context fixture");
+
+/**
+ * Publish `count` files that all match, in one commit.
+ *
+ * One commit rather than one per file: the point is the context file budget, and
+ * twenty-one pushes would only slow the suite down.
+ */
+function publishMany(work: string, branch: string, count: number): void {
+  execFileSync("git", ["-C", work, "checkout", "-q", "-B", branch], { stdio: "ignore" });
+  for (let index = 0; index < count; index += 1) {
+    const target = path.join(work, "many", `f${index}.txt`);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "manyMarker\n");
+  }
+  execFileSync("git", ["-C", work, "add", "-A"], { stdio: "ignore" });
+  execFileSync(
+    "git",
+    [
+      "-C", work,
+      "-c", "user.email=test@example.com",
+      "-c", "user.name=Test",
+      "commit", "-q", "-m", "many files",
+    ],
+    { stdio: "ignore" },
+  );
+  execFileSync("git", ["-C", work, "push", "-q", "origin", branch], { stdio: "ignore" });
+  execFileSync("git", ["-C", work, "checkout", "-q", "main"], { stdio: "ignore" });
+}
+
+publishMany(fixture.work, "feat/MANY", 21);
 
 function makeConfig(overrides: Partial<Config> = {}): Config {
   return {
@@ -150,6 +205,55 @@ describe("parseGrepCounts", () => {
     const rev = "d".repeat(40);
     assert.deepEqual(parseGrepCounts("", rev), []);
     assert.deepEqual(parseGrepCounts(`${rev}:src/a.ts\u0000`, rev), []);
+  });
+});
+
+describe("contextRanges", () => {
+  it("merges windows that touch, and keeps distant ones apart", () => {
+    assert.deepEqual(contextRanges([2, 3, 10, 15], 1, 15), [
+      { from: 1, to: 4 },
+      { from: 9, to: 11 },
+      { from: 14, to: 15 },
+    ]);
+  });
+
+  it("joins windows that overlap", () => {
+    // Radius 2 puts 8..12 and 11..15 on top of each other; one hunk, not two.
+    assert.deepEqual(contextRanges([10, 13], 2, 20), [{ from: 8, to: 15 }]);
+  });
+
+  it("clamps to the file, so the first and last lines have no phantom neighbour", () => {
+    assert.deepEqual(contextRanges([1], 3, 5), [{ from: 1, to: 4 }]);
+    assert.deepEqual(contextRanges([5], 3, 5), [{ from: 2, to: 5 }]);
+  });
+
+  it("answers nothing for no matches, and drops a line past the file", () => {
+    assert.deepEqual(contextRanges([], 2, 10), []);
+    assert.deepEqual(contextRanges([40], 2, 10), []);
+  });
+});
+
+describe("contextLines", () => {
+  it("numbers the merged ranges and marks only the matched lines", () => {
+    assert.deepEqual(contextLines("one\ntwo\nthree\nfour\nfive\n", [2, 4], 1), [
+      { line: 1, text: "one", matched: false },
+      { line: 2, text: "two", matched: true },
+      { line: 3, text: "three", matched: false },
+      { line: 4, text: "four", matched: true },
+      { line: 5, text: "five", matched: false },
+    ]);
+  });
+
+  it("drops a CR so a CRLF file reads like the match rows do", () => {
+    assert.deepEqual(contextLines("one\r\ntwo\r\n", [1], 1), [
+      { line: 1, text: "one", matched: true },
+      { line: 2, text: "two", matched: false },
+    ]);
+  });
+
+  it("keeps a final line with no newline, and handles an empty file", () => {
+    assert.deepEqual(contextLines("only", [1], 1), [{ line: 1, text: "only", matched: true }]);
+    assert.deepEqual(contextLines("", [], 1), []);
   });
 });
 
@@ -318,6 +422,52 @@ describe("formatSearch", () => {
       assert.match(text, /count="0" files="0"/);
       assert.match(text, /\(no matches\)/);
     }
+  });
+
+  it("renders context as a numbered hunk, marking matches and breaking distant ones", () => {
+    const text = formatSearch(
+      searchResult({
+        context: {
+          radius: 1,
+          files: [
+            {
+              path: "src/a.ts",
+              lines: [
+                { line: 1, text: "header", matched: false },
+                { line: 2, text: "alpha one", matched: true },
+                { line: 3, text: "tail", matched: false },
+                { line: 9, text: "alpha two", matched: true },
+              ],
+            },
+          ],
+        },
+        matches: [
+          { path: "src/a.ts", line: 2, text: "alpha one" },
+          { path: "src/a.ts", line: 9, text: "alpha two" },
+        ],
+        total: 2,
+        files: 1,
+      }),
+    );
+
+    assert.match(text, /context="1"/);
+    assert.match(text, /\nsrc\/a\.ts\n {2}1: header\n> 2: alpha one\n {2}3: tail\n {2}…\n> 9: alpha two\n/);
+  });
+
+  it("falls back to the match rows when a file has no context, and says why", () => {
+    const text = formatSearch(
+      searchResult({
+        context: {
+          radius: 1,
+          files: [{ path: "src/a.ts", lines: [], note: "the file is binary" }],
+        },
+        matches: [{ path: "src/a.ts", line: 4, text: "alpha" }],
+        total: 1,
+        files: 1,
+      }),
+    );
+
+    assert.match(text, /\nsrc\/a\.ts\n {2}4: alpha\n {2}\[no context: the file is binary\]\n/);
   });
 });
 
@@ -594,6 +744,57 @@ describe("search output modes over a fixture", () => {
     });
     assert.deepEqual(counts.fileHits, []);
     assert.equal(counts.total, 0);
+  });
+});
+
+describe("match context over a fixture", () => {
+  it("shows the lines around each match, merged, with the matched ones marked", async () => {
+    const result = await store.search("demo", "alpha", { ref: "feat/CONTEXT", context: 1 });
+    assert.equal(result.context?.radius, 1);
+
+    const file = result.context?.files.find((entry) => entry.path === "ctx.txt");
+    assert.deepEqual(file?.lines.map((line) => line.line), [1, 2, 3, 4, 9, 10, 11, 14, 15]);
+    assert.deepEqual(
+      file?.lines.filter((line) => line.matched).map((line) => line.line),
+      [2, 3, 10, 15],
+    );
+    assert.equal(file?.note, undefined);
+  });
+
+  it("widens with the radius, and joins windows that meet", async () => {
+    const result = await store.search("demo", "alpha", { ref: "feat/CONTEXT", context: 2 });
+    const file = result.context?.files.find((entry) => entry.path === "ctx.txt");
+    // [1..5] from the run, then [8..12] and [13..15] are one hunk because they touch.
+    assert.deepEqual(file?.lines.map((line) => line.line), [
+      1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15,
+    ]);
+  });
+
+  it("stops reading after the context budget and says which files got no context", async () => {
+    const result = await store.search("demo", "manyMarker", { ref: "feat/MANY", context: 1 });
+    assert.equal(result.files, 21);
+    assert.equal(result.context?.files.length, 21);
+
+    const without = (result.context?.files ?? []).filter((entry) => entry.note !== undefined);
+    assert.equal(without.length, 1, "twenty files are read; the twenty-first is named, not read");
+    assert.match(without[0]?.note ?? "", /first 20 files/);
+    assert.deepEqual(without[0]?.lines, []);
+  });
+
+  it("refuses context for the modes that have no matched line", async () => {
+    await assert.rejects(
+      store.search("demo", "alpha", { ref: "feat/CONTEXT", output: "files", context: 1 }),
+      /context needs output "matches"/,
+    );
+    await assert.rejects(
+      store.search("demo", "alpha", { ref: "feat/CONTEXT", output: "count", context: 2 }),
+      /context needs output "matches"/,
+    );
+  });
+
+  it("has no context when it was not asked for", async () => {
+    const result = await store.search("demo", "alpha", { ref: "feat/CONTEXT" });
+    assert.equal(result.context, undefined);
   });
 });
 
