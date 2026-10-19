@@ -104,7 +104,7 @@ the disk for checkouts, so the choice of source is explicit and recorded in
     "group/subgroup/repo": {
       "source": "mirror",            // "mirror" | "local"
       "localPath": null,             // set when source == "local"
-      "cloneStrategy": "full",       // "full" | "blobless" (blobless not yet used)
+      "cloneStrategy": "full",       // "full" only; "blobless" is refused (4b)
       "freshnessMode": "manual",     // overrides GITLAB_FETCH_MODE
       "freshnessTtlSeconds": 600     // overrides GITLAB_FETCH_TTL_SECONDS
     }
@@ -119,6 +119,13 @@ discarded — the only ways it got that way are a hand edit or an interrupted
 write. `add_repo` merges into the entry that is already there, so re-pointing a
 project at a path cannot quietly reset a hand-written `freshnessMode`; going back
 to a mirror clears `localPath` in the same step.
+
+`cloneStrategy` accepts only `"full"` (4b). A file that says `"blobless"` is not
+coerced to `"full"` and forgotten: the entry keeps the refused value, `list_repos`
+reports it, and using that project fails with a message naming the project, the
+value and the fix. A policy nothing honours should be visible, not silently
+downgraded — and `blobless` earns its refusal on the merits (see the disk row in
+§8).
 
 ### 3.3 Ref resolution flow
 
@@ -273,9 +280,12 @@ Tool names are exposed by OpenCode as `gitlab_<tool>`.
   is cloned when it is missing.)
 
 **Reads (core)**
-- `get_file(project, ref, path)` — `git show <ref>:<path>`. ✅
-- `list_tree(project, ref, path?, recursive?, max_entries?)` — `git ls-tree -l -z`,
-  one level deep by default, paths relative to the repository root. ✅
+- `get_file(project, ref, path, max_bytes?, url?)` — `git show <ref>:<path>`. ✅
+  `url` (4b) substitutes for `project`+`ref`+`path`: a pasted blob or raw link is
+  parsed, and a `#L12-20` anchor selects that line range (1-based, inclusive).
+- `list_tree(project, ref, path?, recursive?, max_entries?, url?)` — `git ls-tree -l -z`,
+  one level deep by default, paths relative to the repository root. ✅ `url` (4b)
+  does the same from a `/-/tree/…` link.
 - `list_refs(project, kind=branches|tags|all, search?, max_refs?)` — `git for-each-ref`,
   scoped to `refs/heads` + `refs/tags`, plus a registered clone's
   `refs/remotes/<remote>` under `branches`, since that is where every branch but
@@ -291,7 +301,7 @@ Tool names are exposed by OpenCode as `gitlab_<tool>`.
 - `blame(project, path, ref, lines?)`.
 
 **Search** — implemented in 4a, `v0.8.0`.
-- `search(project, query, ref?, path?, case_sensitive?, regex?, max_matches?)` —
+- `search(project, query, ref?, path?, case_sensitive?, regex?, max_matches?, output?, context?)` —
   `git grep` over the tree of one ref, matches grouped by file as
   `path:line: text`, with the same `commit` / `synced_at` provenance as
   `get_file`. ✅
@@ -348,13 +358,74 @@ case-sensitive by itself and `-i` does apply to it (verified with git 2.53), so
 the live check found the case-sensitive default answering "no commit ever
 changed this" about text plainly present on the branch.
 
+`search` output modes and match context (4b, mechanics verified with git 2.53,
+2026-10-19):
+
+- **`output: "matches" | "files" | "count"`.** `files` runs `git grep -l -z` and
+  `count` runs `git grep -c -z`, because a broad query does not need every matched
+  line to answer "how many, and where". The shapes differ, and each was read out of
+  the bytes rather than assumed: `-l -z` writes `rev:path\0` per file with **no**
+  newlines at all, so its records are NUL-separated; `-c -z` writes
+  `rev:path\0count\n`, one pair per file, which is the match layout with the count
+  standing where `line` stands and no text. Measured on `data-testid` (682 matches
+  in 269 files): 111 KB of matches, 28 KB of paths, 29 KB of counts — so both cheap
+  modes stay exact when `max_matches` (or the byte cap) would have cut the match
+  list, and there `max_matches` only caps the rows printed while the header still
+  reports every file and the true total.
+- **`context: N` is assembled in TypeScript, not by git.** After the 4a finding
+  that `-p` loses its `=` marker under `-z`, the other two flags were measured too:
+  `-C` and `-W` write context lines in exactly the match layout
+  (`path\0line\0text`), so after parsing there is no way to tell which line
+  matched. Instead, for the matches actually displayed, grouped by file and capped
+  at 20 files, the blob is read once with `git show <commit>:<path>` — the same
+  read path as `get_file` — and `N` lines either side of each match are printed
+  with the matched line marked `>`. Overlapping ranges merge, distant ones are
+  separated by `…`, and a file whose read is capped says so rather than going
+  quiet. `N` defaults to 0, which leaves 4a's output untouched.
+
 **Ergonomics**
-- `parse_gitlab_url(url)` → `{project, ref, path}` from
-  `https://<host>/group/repo/-/blob/<ref>/<path>`.
+
+**GitLab URLs (4b).** `parse_gitlab_url(url, resolve?)` returns what a link names,
+so a URL can go to a read instead of being decoded by hand; `get_file` and
+`list_tree` also accept `url` directly, which is the common case.
+
+- **Shapes.** `/-/blob/<ref>/<path>` and `/-/raw/<ref>/<path>` name a file;
+  `/-/tree/<ref>` and `/-/tree/<ref>/<path>` name a directory;
+  `/-/blame/<ref>/<path>` names a file (blame itself is phase 3).
+  `/-/commit/<sha>`, `/-/commits/<ref>[/<path>]` and `/-/merge_requests/<iid>` are
+  recognised and refused by name: they are not a file or a directory, and guessing
+  would read something the link did not point at.
+- **The project** is everything before the first `/-/`; a trailing `.git`, a
+  trailing slash, `?query` and `#fragment` are stripped. **The host must equal
+  `GITLAB_HOST`** (scheme and case ignored): a link to another instance is refused
+  with both hosts named, rather than reading a same-named project here.
+- **A ref may contain slashes.** `/-/blob/fix/PROJ-7608/src/index.tsx` has three
+  plausible splits, so the remainder is matched against the source's actual refs
+  (`for-each-ref`, no fetch) and the **longest** known ref that is a prefix —
+  followed by `/` or the end — wins, which is the greedy resolution GitLab itself
+  does. `?ref_type=tags` prefers a tag when one name is both. With no match, the
+  first-segment reading is used and the read fails with the usual not-found message
+  and close matches, so a link never turns into a confident guess.
+- **Line anchors.** `#L12`, `#L12-20` and `#L12-L20` become `lines: {from, to}`,
+  and `get_file` renders exactly that range (1-based, inclusive): the point of
+  pasting a link is that it already points at the lines.
+- `resolve: false` parses **offline** — no registry, no mirror, no network — and
+  reports `resolved="false"`, splitting the ref at the first segment. That is the
+  inspection mode for a link whose project should not be touched.
+- Parsing is a pure function in `src/url.ts`, unit-tested against URL shapes rather
+  than the network; resolving the ref is a store concern, because only the store
+  knows the refs.
 - Optional configured **default project** so agents can omit it.
 
 Every read result includes: `commit_sha`, `synced_at`, and for text files a
 truncation flag when output is capped.
+
+4b **reviews** that promise rather than extending it: for every tool, that a capped
+answer says it was capped and reports the total it knows; that `synced_at` is the
+source's own stamp on every path (a mirror, a clone, `manual`, a failed refresh);
+and that nothing falls back silently — including a registry value nothing honours
+(`cloneStrategy`, §3.2). The output is a findings row in `history.md` per issue
+found, and a code change only where a check fails.
 
 ---
 
@@ -377,6 +448,10 @@ truncation flag when output is capped.
   the header at fetch time.
 - **Argument-injection guard:** pass args as an array (no shell); reject
   refs/paths starting with `-`; use `--` separators where applicable.
+- **A pasted URL is input, not authority (4b):** the project path is checked
+  before it becomes an argument, a ref or path starting with `-` is still rejected
+  after parsing, and the link's host must equal `GITLAB_HOST` first — so a link to
+  another instance cannot direct a read at a same-named project here.
 - `GIT_TERMINAL_PROMPT=0` so a bad token fails fast instead of hanging the MCP.
 - `--no-pager`; `-c core.longpaths=true` (Windows).
 - Output caps: refuse/flag binary files; truncate large text with an explicit
@@ -419,11 +494,12 @@ truncation flag when output is capped.
 | 2c-2 | Local clones: `add_repo`, `remove_repo`, mirror+local resolution | A registered clone answers reads with no mirror created for it, fetches only what it lacks, and nothing falls back silently |
 | 3 | Diff & history: `compare`, `diff_file`, `log`, `get_commit`, `blame` | "What changed between `develop` and `fix/PROJ-7608`?" works |
 | 4a | Search: `search` (`git grep`) and `pickaxe` (`git log -S`) | "Where is this used on `fix/PROJ-7608`, and when did it appear?" answered without a clone |
-| 4b | Polish: `parse_gitlab_url`, function context for `search`, `files`/`count` output modes, blobless clones, truncation and stale-visibility review | Every read states its provenance; a GitLab file URL can be handed straight to `get_file` |
+| 4b | Polish: GitLab URLs (`parse_gitlab_url`, `url` on `get_file`/`list_tree`, line anchors), `search` output modes and match context, the `cloneStrategy` refusal, truncation and stale-visibility review | A pasted GitLab blob link reads the file — and the line range it names — with no hand decoding; a broad search answers "how many, in which files" without parsing every match; a policy value nothing honours is refused by name rather than stored and ignored |
 
 > **Status:** phases 0, 1, 2a, 2b, 2c-1, 2c-2 and 4a complete. The newest tag is
-> `v0.8.0` (4a: search and pickaxe). Phase 3 (diff and history) is next; 4b
-> collects the polish. Per-phase detail: [`history.md`](history.md).
+> `v0.8.0` (4a: search and pickaxe). 4b — the GitLab URL work, `search` output
+> modes and context, and the review — is next; phase 3 (diff and history) follows.
+> Per-phase detail: [`history.md`](history.md).
 
 ### Source layout
 
@@ -437,7 +513,7 @@ src/
   repoStore.ts   # project -> source resolution, refs, trees, freshness policy
   sources.ts     # mirror paths, clone, fetch, per-source lock, the sync clock
   registry.ts    # repos.json: per-project source and freshness policy
-  url.ts         # GitLab web URL -> {project, ref, path}      (Phase 4)
+  url.ts         # GitLab web URL -> {project, kind, ref, path, lines}   (4b)
   tools/
     result.ts      # shared tool result shapes and error rendering
     files.ts       # get_file, list_tree                            ✅ Phase 2b-2
@@ -453,6 +529,7 @@ test/
   refs.test.ts   # ref listing, resolution, close matches
   tree.test.ts   # directory listings, the ls-tree parser, rendering
   search.test.ts # grep and log -S: parsers, rendering, fixture reads
+  url.test.ts    # GitLab URL shapes, ref resolution, line anchors
   repos.test.ts  # rendering the registry listing
   git.test.ts    # the git wrapper
   gitDiagnostics.test.ts  # git stderr -> actionable hint
@@ -511,7 +588,7 @@ rule enforced rather than remembered.
 |---|---|
 | Silently stale mirrors | TTL/always/manual policy, fetch-on-miss, visible `synced_at` + `commit_sha` |
 | Internal CA blocks TLS | Resolve in Phase 0 before writing code |
-| Large repos / disk | Per-repo `blobless` partial clone option; prefer local clones |
+| Large repos / disk | A partial (`blobless`) clone was considered and **dropped in 4b**: grep, `git show` and pickaxe's patches all need blob contents, so a blobless source would fetch blobs over the network — with credentials — during a read, which is the property this server exists to avoid. The disk answer is a registered local clone. |
 | Token leakage | env + `http.extraheader`, never logged, read-only scope |
 | Command injection via ref/path | array args, reject leading `-`, `--` separators |
 | Fetch stalls MCP | `GIT_TERMINAL_PROMPT=0`, per-project fetch lock, OpenCode timeouts |
