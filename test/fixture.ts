@@ -186,6 +186,29 @@ export function renameOnBranch(
 }
 
 /**
+ * Publish a branch with no parent at all, committing it as an orphan in the
+ * working checkout and then restoring what was there.
+ *
+ * Two roots are what makes `git merge-base` answer nothing — exit 1 with no
+ * output, measured — which is a comparison the tools have to name rather than
+ * fail on.
+ */
+export function addOrphanBranch(
+  work: string,
+  branch: string,
+  relPath: string,
+  contents: string,
+): void {
+  runGit(work, ["checkout", "-q", "--orphan", branch]);
+  runGit(work, ["rm", "-r", "-q", "-f", "."]);
+  writeFile(work, relPath, contents);
+  runGit(work, ["add", "-A"]);
+  commit(work, "orphan root");
+  runGit(work, ["checkout", "-q", "main"]);
+  publish(work);
+}
+
+/**
  * Create `branch` from main, commit a file on it, then merge it back with
  * `--no-ff` and publish — so main carries a real merge commit, two parents and
  * no diff of its own.

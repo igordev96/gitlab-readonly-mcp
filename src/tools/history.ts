@@ -3,15 +3,20 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Config } from "../config.js";
 import {
   DEFAULT_BLAME_MAX_LINES,
+  DEFAULT_COMPARE_MAX_FILES,
   DEFAULT_FILE_MAX_BYTES,
   DEFAULT_LOG_LIMIT,
   HARD_BLAME_MAX_LINES,
+  HARD_COMPARE_MAX_FILES,
+  HARD_DIFF_CONTEXT,
   HARD_FILE_MAX_BYTES,
   HARD_LOG_LIMIT,
   NotFoundError,
   type BlameResult,
   type CommitFile,
   type CommitResult,
+  type CompareResult,
+  type DiffFileResult,
   type LogResult,
   type RepoStore,
 } from "../repoStore.js";
@@ -235,6 +240,92 @@ export function formatBlame(result: BlameResult): string {
   return `<blame ${attributes}>\n${body}${footer}\n</blame>`;
 }
 
+/**
+ * Render a comparison: one row per changed file, never a patch.
+ *
+ * `merge_base="off"` and `merge_base="none"` are different facts — the first is
+ * a two-dot diff the caller asked for, the second a three-dot diff that found
+ * no common ancestor — so the header never leaves which one it was to a guess.
+ */
+export function formatCompare(result: CompareResult): string {
+  const base =
+    result.mergeBase !== undefined
+      ? `merge_base="${result.mergeBase}"`
+      : result.mergeBaseMissing
+        ? 'merge_base="none"'
+        : 'merge_base="off"';
+  const attributes = [
+    `project="${result.project}"`,
+    `from="${oneLine(result.from)}"`,
+    `to="${oneLine(result.to)}"`,
+    `from_commit="${result.fromCommit}"`,
+    `to_commit="${result.toCommit}"`,
+    base,
+    result.path ? `path="${oneLine(result.path)}"` : undefined,
+    `files="${result.files.length}"`,
+    `total_files="${result.totalFiles}"`,
+    `additions="${result.additions}"`,
+    `deletions="${result.deletions}"`,
+    `max_files="${result.maxFiles}"`,
+    result.syncedAt ? `synced_at="${result.syncedAt.toISOString()}"` : SYNCED_AT_UNKNOWN,
+    result.refreshError ? 'refresh_failed="true"' : undefined,
+    result.truncated ? 'truncated="true"' : undefined,
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join(" ");
+
+  const rows = result.files.map(fileRow);
+  const body = rows.length > 0 ? rows.join("\n") : "(no files changed)";
+
+  let footer = "";
+  if (result.outputTruncated) {
+    footer +=
+      "\n[truncated: the diff output was cut at the size limit, so the file list and the totals are partial]";
+  } else if (result.truncated) {
+    footer +=
+      `\n[truncated: showing the first ${result.files.length} of ${result.totalFiles} changed files; ` +
+      `raise "max_files" for more]`;
+  }
+  if (result.mergeBaseMissing) {
+    footer +=
+      `\n[no merge base: "${oneLine(result.from)}" and "${oneLine(result.to)}" have unrelated histories, ` +
+      `so this is a raw two-dot diff between the two commits]`;
+  }
+  if (result.path !== undefined) {
+    footer +=
+      "\n[path is a git pathspec, and it narrows rename detection with it: a renamed file can appear as a delete and an add]";
+  }
+  footer += refreshFailedNote(result.refreshError);
+
+  return `<compare ${attributes}>\n${body}${footer}\n</compare>`;
+}
+
+/** Render one file's patch, verbatim, under its byte cap. */
+export function formatDiffFile(result: DiffFileResult): string {
+  const attributes = [
+    `project="${result.project}"`,
+    `path="${oneLine(result.path)}"`,
+    `from="${oneLine(result.from)}"`,
+    `to="${oneLine(result.to)}"`,
+    `from_commit="${result.fromCommit}"`,
+    `to_commit="${result.toCommit}"`,
+    `context="${result.context}"`,
+    `bytes="${Buffer.byteLength(result.patch, "utf8")}"`,
+    result.syncedAt ? `synced_at="${result.syncedAt.toISOString()}"` : SYNCED_AT_UNKNOWN,
+    result.refreshError ? 'refresh_failed="true"' : undefined,
+    result.truncated ? 'truncated="true"' : undefined,
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join(" ");
+
+  const body =
+    result.patch.trimEnd() ||
+    `(no changes to "${oneLine(result.path)}" between "${oneLine(result.from)}" and "${oneLine(result.to)}")`;
+  const footer = result.truncated ? "\n[truncated: the patch was cut at the byte limit]" : "";
+
+  return `<diff ${attributes}>\n${body}${footer}\n</diff>`;
+}
+
 export function registerHistoryTools(server: McpServer, store: RepoStore, config: Config): void {
   server.registerTool(
     "log",
@@ -436,6 +527,163 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
           return errorResult(error.message);
         }
         return errorResult(`Failed to blame "${path}" in "${target}".\n${failureMessage(error)}`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "compare",
+    {
+      title: "Compare two refs",
+      description:
+        "Summarise what changed on `to` since it split from `from` — `git diff <merge-base> <to>` — as one row " +
+        "per file: git's status letter (`A`, `M`, `D`, `R091 old -> new`) and ± counts, or `binary`. The " +
+        "`merge_base` is printed, so which diff ran is never hidden; `merge_base: false` asks for the raw two-dot " +
+        "diff instead, and when the two refs share no history the two-dot diff runs with `merge_base=\"none\"`. " +
+        "This never returns a patch — a branch diff is unbounded — so the file list is capped by `max_files` and a " +
+        "capped answer says so. Use `diff_file` for one file's patch, passing a printed `merge_base` as `from` for " +
+        "the branch view of it. `path` is a git pathspec, and it narrows rename detection with it: a rename can " +
+        "then appear as a delete and an add. Both refs are resolved before the diff and both commits are stated in " +
+        "the result, with `synced_at`.",
+      inputSchema: {
+        from: z
+          .string()
+          .describe(
+            "The ref to compare from — what the split is measured from, e.g. 'develop' or a commit sha.",
+          ),
+        to: z
+          .string()
+          .describe(
+            "The ref to compare to — whose changes are summarised, e.g. 'fix/PROJ-7608'.",
+          ),
+        project: z
+          .string()
+          .optional()
+          .describe(
+            "GitLab project path, e.g. 'group/subgroup/repo'. Defaults to GITLAB_DEFAULT_PROJECT.",
+          ),
+        path: z
+          .string()
+          .optional()
+          .describe(
+            "A git pathspec to narrow the comparison, e.g. 'src/'. Note that it narrows rename detection too.",
+          ),
+        merge_base: z
+          .boolean()
+          .optional()
+          .describe(
+            "Diff from the merge base of the two refs (default true). Set false for the raw two-dot diff — 'what would applying this do'.",
+          ),
+        max_files: z
+          .number()
+          .int()
+          .positive()
+          .max(HARD_COMPARE_MAX_FILES)
+          .optional()
+          .describe(
+            `Maximum changed files to list (default ${DEFAULT_COMPARE_MAX_FILES}). Totals still cover every file; a capped answer says so.`,
+          ),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ from, to, project, path, merge_base, max_files }) => {
+      const target = project?.trim() || config.defaultProject;
+      if (!target) {
+        return errorResult(NO_PROJECT);
+      }
+      if (from.trim() === "" || to.trim() === "") {
+        return errorResult('compare needs both a "from" and a "to" ref.');
+      }
+
+      try {
+        const result = await store.compare(target, from, to, {
+          path,
+          mergeBase: merge_base,
+          maxFiles: max_files,
+        });
+        return textResult(formatCompare(result));
+      } catch (error) {
+        if (error instanceof NotFoundError) {
+          return errorResult(error.message);
+        }
+        return errorResult(
+          `Failed to compare "${from}" and "${to}" in "${target}".\n${failureMessage(error)}`,
+        );
+      }
+    },
+  );
+
+  server.registerTool(
+    "diff_file",
+    {
+      title: "Diff one file between two refs",
+      description:
+        "The unified diff of one file between two refs — `git diff -M <from> <to> -- <path>` — without a working " +
+        "tree. The caller names the file and the diff is scoped before git runs, so nothing is found by parsing a " +
+        "patch header. `context` sets the lines shown around each hunk (default 3, 0-10) and `max_bytes` caps the " +
+        "diff. Scoping by path narrows rename detection, so a renamed file is read as an added (or deleted) file. " +
+        "The two refs are a raw two-dot diff: pass a `merge_base` printed by `compare` as `from` for the " +
+        "branch view of one file. A file that is unchanged between the refs yields no diff, and one absent from " +
+        "both is reported as not found. A binary file is refused: git has only a \"Binary files … differ\" line " +
+        "for it, which is not a patch.",
+      inputSchema: {
+        path: z.string().describe("File path from the repository root, e.g. 'src/index.tsx'."),
+        from: z.string().describe("The ref to diff from, e.g. 'develop' or a commit sha."),
+        to: z.string().describe("The ref to diff to, e.g. 'fix/PROJ-7608'."),
+        project: z
+          .string()
+          .optional()
+          .describe(
+            "GitLab project path, e.g. 'group/subgroup/repo'. Defaults to GITLAB_DEFAULT_PROJECT.",
+          ),
+        context: z
+          .number()
+          .int()
+          .min(0)
+          .max(HARD_DIFF_CONTEXT)
+          .optional()
+          .describe(
+            `Lines of context on each side of a hunk (default 3, at most ${HARD_DIFF_CONTEXT}). Use 0 for the fewest lines.`,
+          ),
+        max_bytes: z
+          .number()
+          .int()
+          .positive()
+          .max(HARD_FILE_MAX_BYTES)
+          .optional()
+          .describe(
+            `Byte cap for the patch (default ${DEFAULT_FILE_MAX_BYTES}). A cut patch is marked in the result.`,
+          ),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ path, from, to, project, context, max_bytes }) => {
+      const target = project?.trim() || config.defaultProject;
+      if (!target) {
+        return errorResult(NO_PROJECT);
+      }
+      if (from.trim() === "" || to.trim() === "") {
+        return errorResult('diff_file needs both a "from" and a "to" ref.');
+      }
+
+      try {
+        const result = await store.diffFile(target, path, from, to, {
+          context,
+          maxBytes: max_bytes,
+        });
+        if (result.binary) {
+          return errorResult(
+            `"${result.path}" between "${result.from}" and "${result.to}" looks binary; refusing to return contents.`,
+          );
+        }
+        return textResult(formatDiffFile(result));
+      } catch (error) {
+        if (error instanceof NotFoundError) {
+          return errorResult(error.message);
+        }
+        return errorResult(
+          `Failed to diff "${path}" in "${target}".\n${failureMessage(error)}`,
+        );
       }
     },
   );

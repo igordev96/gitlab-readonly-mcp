@@ -166,6 +166,37 @@ describe("MCP protocol", () => {
     assert.match(textOf(blamed), /\n  1: export const hello = 'fix\/TEST-1';\n/);
   });
 
+  it("exposes compare and diff_file, and summarises a branch", async () => {
+    const { tools } = await client.listTools();
+    const names = tools.map((tool) => tool.name);
+    for (const expected of ["compare", "diff_file"]) {
+      assert.ok(names.includes(expected), `${expected} is missing; saw ${names.join(", ")}`);
+    }
+
+    const summary = await client.callTool({
+      name: "compare",
+      arguments: { project: "demo", from: "main", to: "fix/TEST-1" },
+    });
+    assert.equal(summary.isError, undefined);
+    assert.match(
+      textOf(summary),
+      /<compare project="demo" from="main" to="fix\/TEST-1" from_commit="[0-9a-f]{40}" to_commit="[0-9a-f]{40}" merge_base="[0-9a-f]{40}"/,
+    );
+    assert.match(textOf(summary), /\nA\tsrc\/components\/Button\.tsx\t\+1 -0\n/);
+    assert.match(textOf(summary), /\nM\tsrc\/index\.tsx\t\+1 -1\n/);
+
+    const patch = await client.callTool({
+      name: "diff_file",
+      arguments: { project: "demo", path: "src/index.tsx", from: "main", to: "fix/TEST-1" },
+    });
+    assert.equal(patch.isError, undefined);
+    assert.match(
+      textOf(patch),
+      /<diff project="demo" path="src\/index\.tsx" from="main" to="fix\/TEST-1"/,
+    );
+    assert.match(textOf(patch), /\n-export const hello = 'main';\n\+export const hello = 'fix\/TEST-1';\n/);
+  });
+
   it("exposes parse_gitlab_url, and reads through a pasted link", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name);

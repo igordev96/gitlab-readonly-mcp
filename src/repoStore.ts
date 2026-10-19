@@ -57,6 +57,17 @@ export const DEFAULT_DIFF_CONTEXT = 3;
 export const DEFAULT_BLAME_MAX_LINES = 500;
 /** Absolute cap on a blame, so one call cannot dump a whole large file. */
 export const HARD_BLAME_MAX_LINES = 5_000;
+/** Default number of changed files `compare` reports. */
+export const DEFAULT_COMPARE_MAX_FILES = 100;
+/** Absolute cap on one comparison's file list. */
+export const HARD_COMPARE_MAX_FILES = 1_000;
+/** Largest context `diff_file` will show on each side of a hunk. */
+export const HARD_DIFF_CONTEXT = 10;
+/**
+ * What git prints instead of a patch for a binary file. It is a sentence about
+ * the file, not a diff, which is why `diff_file` refuses it by name.
+ */
+const BINARY_PATCH = /^Binary files .+ differ$/m;
 /**
  * One `git log -z` record: full sha, short sha, parents, author, author date,
  * subject. `0x1f` separates fields and `0x1e` ends the record, because a subject
@@ -512,6 +523,83 @@ export interface BlameResult {
   truncated: boolean;
   /** True when the byte cap cut the output. */
   outputTruncated: boolean;
+  syncedAt?: Date;
+  fetched: boolean;
+  /** Set when the freshness check failed and this answer came from the cache. */
+  refreshError?: string;
+}
+
+/** How `compare` should be run. */
+export interface CompareOptions {
+  /** A git pathspec narrowing the comparison. It narrows rename detection too. */
+  path?: string;
+  /**
+   * False asks for the raw two-dot diff (`from to`) instead of the three-dot
+   * one. Default true: what changed on `to` since it split from `from`.
+   */
+  mergeBase?: boolean;
+  maxFiles?: number;
+}
+
+export interface CompareResult {
+  project: string;
+  /** What the caller asked for. */
+  from: string;
+  to: string;
+  /** The commit each ref resolved to. */
+  fromCommit: string;
+  toCommit: string;
+  /**
+   * The base the diff ran from: the merge base when there is one. Absent for a
+   * raw two-dot diff, and for an unrelated pair.
+   */
+  mergeBase?: string;
+  /** True when a three-dot comparison was asked for. */
+  mergeBaseRequested: boolean;
+  /** True when a merge base was asked for and none exists (unrelated roots). */
+  mergeBaseMissing: boolean;
+  path?: string;
+  /** The files shown, capped by `maxFiles`. */
+  files: CommitFile[];
+  /** Every changed file, whether shown or not. */
+  totalFiles: number;
+  /** Totals over every changed file; partial when `outputTruncated`. */
+  additions: number;
+  deletions: number;
+  maxFiles: number;
+  /** True when `maxFiles` hid rows. */
+  truncated: boolean;
+  /** True when the byte cap cut the diff output. */
+  outputTruncated: boolean;
+  syncedAt?: Date;
+  fetched: boolean;
+  /** Set when the freshness check failed and this answer came from the cache. */
+  refreshError?: string;
+}
+
+/** How `diff_file` should be run. */
+export interface DiffFileOptions {
+  /** Lines of context on each side of a hunk. Default 3, at most 10. */
+  context?: number;
+  /** Byte cap on the patch. */
+  maxBytes?: number;
+}
+
+export interface DiffFileResult {
+  project: string;
+  path: string;
+  /** What the caller asked for. */
+  from: string;
+  to: string;
+  fromCommit: string;
+  toCommit: string;
+  context: number;
+  /** True when git had no patch to give: a binary file. */
+  binary: boolean;
+  /** The unified diff, verbatim; empty when git found no changes. */
+  patch: string;
+  /** True when the byte cap cut the patch. */
+  truncated: boolean;
   syncedAt?: Date;
   fetched: boolean;
   /** Set when the freshness check failed and this answer came from the cache. */
@@ -2284,41 +2372,11 @@ export class RepoStore {
     let filesTruncated = false;
 
     if (!merge) {
-      const statusRun = await this.git.run(
-        ["show", "--format=", "--name-status", "-z", "-M", commit],
-        { gitDir: source.gitDir, maxBytes: HISTORY_MAX_BYTES },
-      );
-      const countRun = await this.git.run(
-        ["show", "--format=", "--numstat", "-z", "-M", commit],
-        { gitDir: source.gitDir, maxBytes: HISTORY_MAX_BYTES },
-      );
-      for (const run of [statusRun, countRun]) {
-        if (run.code !== 0) {
-          throw new GitError(
-            `Failed to list the files changed by ${commit.slice(0, 12)}.`,
-            run.code,
-            this.redact(run.stderr).trim(),
-          );
-        }
-      }
-
-      const counts = new Map(
-        parseNumstat(countRun.stdout).map((entry) => [fileKey(entry), entry]),
-      );
-      files = parseNameStatus(statusRun.stdout).map((entry) => {
-        const count = counts.get(fileKey(entry));
-        return {
-          status: entry.status,
-          path: entry.path,
-          oldPath: entry.oldPath,
-          additions: count?.additions,
-          deletions: count?.deletions,
-          binary: count?.binary ?? false,
-        };
-      });
-      additions = files.reduce((sum, file) => sum + (file.additions ?? 0), 0);
-      deletions = files.reduce((sum, file) => sum + (file.deletions ?? 0), 0);
-      filesTruncated = statusRun.truncated || countRun.truncated;
+      const listed = await this.diffFiles(source, ["show", "--format=", commit], []);
+      files = listed.files;
+      additions = listed.additions;
+      deletions = listed.deletions;
+      filesTruncated = listed.truncated;
     }
 
     let patch: string | undefined;
@@ -2505,7 +2563,282 @@ export class RepoStore {
     };
   }
 
+  /**
+   * Compare two refs: a summary of what changed on `to` since it left `from`.
+   *
+   * Three-dot by default, because that is the question a branch comparison
+   * asks. The base comes from `git merge-base` and is printed, so which diff
+   * ran is never hidden; with no common ancestor git has no base to give, and
+   * the raw two-dot diff runs with `merge_base="none"` saying so. Never a
+   * patch: a branch diff is unbounded, and a silently capped patch would be
+   * worse than a summary that admits its own cap.
+   */
+  async compare(
+    project: string,
+    from: string,
+    to: string,
+    options: CompareOptions = {},
+  ): Promise<CompareResult> {
+    const cleanProject = validateProject(project);
+    const cleanPath = options.path === undefined ? undefined : validateRepoPath(options.path);
+    const { source, from: base, to: tip, fetched, refreshError } = await this.resolvePair(
+      cleanProject,
+      from,
+      to,
+    );
+
+    const mergeBaseRequested = options.mergeBase !== false;
+    let mergeBase: string | undefined;
+    let mergeBaseMissing = false;
+    if (mergeBaseRequested) {
+      const run = await this.git.run(["merge-base", base.commit, tip.commit], {
+        gitDir: source.gitDir,
+        maxBytes: 4096,
+      });
+      const found = run.stdout.trim();
+      if (run.code === 0 && found) {
+        mergeBase = found;
+      } else if (run.code === 0 || run.code === 1) {
+        // Exit 1 is git's "no common ancestor", measured: no output, no error.
+        mergeBaseMissing = true;
+      } else {
+        throw new GitError(
+          `Failed to find the merge base of "${base.display}" and "${tip.display}".`,
+          run.code,
+          this.redact(run.stderr).trim(),
+        );
+      }
+    }
+
+    const pathspec = cleanPath === undefined ? [] : ["--", cleanPath];
+    const listed = await this.diffFiles(
+      source,
+      ["diff", mergeBase ?? base.commit, tip.commit],
+      pathspec,
+    );
+
+    const maxFiles = Math.min(
+      Math.max(options.maxFiles ?? DEFAULT_COMPARE_MAX_FILES, 1),
+      HARD_COMPARE_MAX_FILES,
+    );
+    const syncMs = await this.sources.lastSyncAt(source.gitDir);
+    return {
+      project: cleanProject,
+      from: base.display,
+      to: tip.display,
+      fromCommit: base.commit,
+      toCommit: tip.commit,
+      mergeBase,
+      mergeBaseRequested,
+      mergeBaseMissing,
+      path: cleanPath,
+      files: listed.files.slice(0, maxFiles),
+      totalFiles: listed.files.length,
+      additions: listed.additions,
+      deletions: listed.deletions,
+      maxFiles,
+      truncated: listed.files.length > maxFiles,
+      outputTruncated: listed.truncated,
+      syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
+      fetched,
+      refreshError,
+    };
+  }
+
+  /**
+   * The unified diff of one file between two refs.
+   *
+   * The pathspec scopes the diff *before* git runs it, so the file is never
+   * found by parsing a patch: a path containing a newline cannot forge a
+   * `diff --git` header for a file nobody asked about. Two refs and a path mean
+   * a raw two-dot diff — pass `compare`'s `merge_base` as `from` for the
+   * branch view of one file.
+   */
+  async diffFile(
+    project: string,
+    filePath: string,
+    from: string,
+    to: string,
+    options: DiffFileOptions = {},
+  ): Promise<DiffFileResult> {
+    const cleanProject = validateProject(project);
+    const cleanPath = validateRepoPath(filePath);
+    const { source, from: base, to: tip, fetched, refreshError } = await this.resolvePair(
+      cleanProject,
+      from,
+      to,
+    );
+
+    const context = Math.min(
+      Math.max(options.context ?? DEFAULT_DIFF_CONTEXT, 0),
+      HARD_DIFF_CONTEXT,
+    );
+    const maxBytes = Math.min(options.maxBytes ?? DEFAULT_FILE_MAX_BYTES, HARD_FILE_MAX_BYTES);
+    const shown = await this.git.run(
+      [
+        "diff",
+        "--patch",
+        "-M",
+        `--unified=${context}`,
+        base.commit,
+        tip.commit,
+        "--",
+        cleanPath,
+      ],
+      { gitDir: source.gitDir, maxBytes },
+    );
+    if (shown.code !== 0) {
+      throw new GitError(
+        `Failed to diff "${cleanPath}".`,
+        shown.code,
+        this.redact(shown.stderr).trim(),
+      );
+    }
+
+    // A binary file yields the sentence "Binary files … differ" and no hunk at
+    // all (measured), which is not a patch.
+    const binary = BINARY_PATCH.test(shown.stdout);
+    if (!binary && shown.stdout.trim() === "") {
+      // An empty diff means either "nothing changed here" or "no such path in
+      // either commit"; only the second is an error.
+      const present = async (commit: string): Promise<boolean> =>
+        (
+          await this.git.run(["cat-file", "-e", `${commit}:${cleanPath}`], {
+            gitDir: source.gitDir,
+            maxBytes: 1024,
+          })
+        ).code === 0;
+      if (!(await present(base.commit)) && !(await present(tip.commit))) {
+        throw new NotFoundError(
+          `Path not found: "${cleanPath}" at "${base.display}" or "${tip.display}" in ${cleanProject}.`,
+        );
+      }
+    }
+
+    const syncMs = await this.sources.lastSyncAt(source.gitDir);
+    return {
+      project: cleanProject,
+      path: cleanPath,
+      from: base.display,
+      to: tip.display,
+      fromCommit: base.commit,
+      toCommit: tip.commit,
+      context,
+      binary,
+      patch: binary ? "" : shown.stdout,
+      truncated: shown.truncated,
+      syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
+      fetched,
+      refreshError,
+    };
+  }
+
   // --- internals -----------------------------------------------------------
+
+  /**
+   * Resolve two refs of one project, resolving the source once between them.
+   *
+   * Each ref goes through the ordinary miss rule, so a ref that only exists on
+   * the server costs its own fetch rather than a re-plan of both.
+   */
+  private async resolvePair(
+    project: string,
+    from: string,
+    to: string,
+  ): Promise<{
+    source: GitSource;
+    from: { display: string; commit: string };
+    to: { display: string; commit: string };
+    fetched: boolean;
+    refreshError?: string;
+  }> {
+    const cleanProject = validateProject(project);
+    const cleanFrom = validateRef(from);
+    const cleanTo = validateRef(to);
+    const source = await this.resolveSource(cleanProject);
+
+    const first = await this.resolveWithFreshness(cleanProject, cleanFrom, source);
+    if (!first.commit) {
+      throw new NotFoundError(
+        await this.notFoundRefMessage(cleanProject, cleanFrom, {
+          refreshError: first.refreshError,
+          skipped: first.skipped,
+          sourceKind: source.kind,
+        }),
+      );
+    }
+    const second = await this.resolveWithFreshness(cleanProject, cleanTo, source);
+    if (!second.commit) {
+      throw new NotFoundError(
+        await this.notFoundRefMessage(cleanProject, cleanTo, {
+          refreshError: second.refreshError,
+          skipped: second.skipped,
+          sourceKind: source.kind,
+        }),
+      );
+    }
+
+    return {
+      source,
+      from: { display: cleanFrom, commit: first.commit },
+      to: { display: cleanTo, commit: second.commit },
+      fetched: first.fetched || second.fetched,
+      refreshError: second.refreshError ?? first.refreshError,
+    };
+  }
+
+  /**
+   * The changed-file list for a diff, zipped from two passes.
+   *
+   * Status and counts do not combine: `--numstat --name-status` prints only the
+   * name-status section because the last flag wins (measured with git 2.53), so
+   * the same diff is walked twice. `base` is the diff command without its output
+   * flags — `["diff", from, to]`, or `["show", "--format=", commit]`, where the
+   * empty format is what suppresses the commit header (`--no-patch` is `-s`,
+   * which git refuses to combine with `--name-status`).
+   */
+  private async diffFiles(
+    source: GitSource,
+    base: string[],
+    pathspec: string[],
+  ): Promise<{ files: CommitFile[]; additions: number; deletions: number; truncated: boolean }> {
+    const statusRun = await this.git.run(
+      [...base, "--name-status", "-z", "-M", ...pathspec],
+      { gitDir: source.gitDir, maxBytes: HISTORY_MAX_BYTES },
+    );
+    const countRun = await this.git.run(
+      [...base, "--numstat", "-z", "-M", ...pathspec],
+      { gitDir: source.gitDir, maxBytes: HISTORY_MAX_BYTES },
+    );
+    for (const run of [statusRun, countRun]) {
+      if (run.code !== 0) {
+        throw new GitError(
+          `Failed to list the changed files of ${base.join(" ")}.`,
+          run.code,
+          this.redact(run.stderr).trim(),
+        );
+      }
+    }
+
+    const counts = new Map(parseNumstat(countRun.stdout).map((entry) => [fileKey(entry), entry]));
+    const files = parseNameStatus(statusRun.stdout).map((entry) => {
+      const count = counts.get(fileKey(entry));
+      return {
+        status: entry.status,
+        path: entry.path,
+        oldPath: entry.oldPath,
+        additions: count?.additions,
+        deletions: count?.deletions,
+        binary: count?.binary ?? false,
+      };
+    });
+    return {
+      files,
+      additions: files.reduce((sum, file) => sum + (file.additions ?? 0), 0),
+      deletions: files.reduce((sum, file) => sum + (file.deletions ?? 0), 0),
+      truncated: statusRun.truncated || countRun.truncated,
+    };
+  }
 
   /**
    * The ref a read should act on: the one asked for, or the source's HEAD — the

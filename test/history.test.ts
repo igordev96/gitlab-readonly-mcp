@@ -20,10 +20,19 @@ import {
   parseNumstat,
   type BlameResult,
   type CommitResult,
+  type CompareResult,
+  type DiffFileResult,
   type LogResult,
 } from "../src/repoStore.js";
-import { formatBlame, formatCommit, formatLog, parseLineSpec } from "../src/tools/history.js";
-import { addBranchWithFile, addMergedBranch, buildFixture, renameOnBranch } from "./fixture.js";
+import { formatBlame, formatCommit, formatCompare, formatDiffFile, formatLog, parseLineSpec } from "../src/tools/history.js";
+import {
+  addBranchWithFile,
+  addMergedBranch,
+  addOrphanBranch,
+  buildFixture,
+  commitOnBranch,
+  renameOnBranch,
+} from "./fixture.js";
 
 const fixture = buildFixture(path.join(os.tmpdir(), "glmcp-fixture-history"));
 const cacheDir = path.join(fixture.root, "cache");
@@ -53,6 +62,21 @@ renameOnBranch(
 );
 addBranchWithFile(fixture.work, "feat/BINARY", "assets/logo.bin", "A\u0000B\u0001\n", "add binary asset");
 addMergedBranch(fixture.work, "feat/MERGE", "src/merged.ts", "export const merged = true;\n", "merge feat/MERGE");
+
+// A file edited in the middle, so `diff_file`'s context width has something to
+// show and something to hide.
+const tenRows = Array.from({ length: 10 }, (_, index) => `export const row${index + 1} = ${index + 1};`);
+addBranchWithFile(fixture.work, "feat/CTX", "src/context.ts", `${tenRows.join("\n")}\n`, "add context file");
+commitOnBranch(
+  fixture.work,
+  "feat/CTX",
+  "src/context.ts",
+  `${[...tenRows.slice(0, 4), "export const row5 = 'edited';", ...tenRows.slice(5)].join("\n")}\n`,
+  "edit a middle line",
+);
+
+// A second root: `git merge-base` answers nothing across it.
+addOrphanBranch(fixture.work, "feat/ORPHAN", "src/orphan.ts", "export const orphan = true;\n");
 
 const store = new RepoStore(makeConfig(), new Git({ bin: "git" }));
 
@@ -601,5 +625,291 @@ describe("blame parsing and rendering", () => {
     assert.match(text, /truncated="true"/);
     assert.match(text, /\[truncated: showing the first 1 lines; raise "max_lines" for more\]/);
     assert.match(text, /\[lines 1-20 were asked for; the file has 8, so 1-8 came back\]/);
+  });
+});
+
+describe("compare", () => {
+  it("compares from the merge base by default and names it", async () => {
+    const result = await store.compare("demo", "main", "fix/TEST-1");
+    assert.equal(result.from, "main");
+    assert.equal(result.to, "fix/TEST-1");
+    assert.equal(result.mergeBaseRequested, true);
+    assert.equal(result.mergeBaseMissing, false);
+    assert.match(result.mergeBase ?? "", /^[0-9a-f]{40}$/);
+    // main carries the merge commit; the branch split before it.
+    assert.notEqual(result.mergeBase, result.fromCommit);
+    assert.deepEqual(
+      result.files.map((file) => `${file.status} ${file.path}`),
+      ["A docs/readme.md", "A src/components/Button.tsx", "M src/index.tsx"],
+    );
+    assert.equal(result.totalFiles, 3);
+    assert.equal(result.additions, 3);
+    assert.equal(result.deletions, 1);
+    assert.equal(result.truncated, false);
+    assert.equal(result.outputTruncated, false);
+    assert.ok(result.syncedAt instanceof Date);
+  });
+
+  it("differs in the two-dot direction when merge_base is false", async () => {
+    const result = await store.compare("demo", "main", "fix/TEST-1", { mergeBase: false });
+    assert.equal(result.mergeBase, undefined);
+    assert.equal(result.mergeBaseRequested, false);
+    assert.equal(result.mergeBaseMissing, false);
+    assert.deepEqual(
+      result.files.map((file) => `${file.status} ${file.path}`),
+      ["A docs/readme.md", "A src/components/Button.tsx", "M src/index.tsx", "D src/merged.ts"],
+    );
+    assert.equal(result.deletions, 2);
+  });
+
+  it("reports a rename with both paths", async () => {
+    const parent = (await store.getCommit("demo", "feat/RENAME")).parents[0] ?? "";
+    const result = await store.compare("demo", parent, "feat/RENAME");
+    assert.equal(result.mergeBase, parent);
+    assert.equal(result.files.length, 1);
+    const file = result.files[0];
+    assert.match(file?.status ?? "", /^R\d+$/);
+    assert.equal(file?.oldPath, "src/many.ts");
+    assert.equal(file?.path, "src/renamed.ts");
+    assert.equal(file?.additions, 1);
+    assert.equal(file?.deletions, 1);
+  });
+
+  it("marks a binary file rather than counting its lines", async () => {
+    const result = await store.compare("demo", "main", "feat/BINARY");
+    assert.equal(result.files[0]?.path, "assets/logo.bin");
+    assert.equal(result.files[0]?.binary, true);
+    assert.equal(result.files[0]?.additions, undefined);
+    assert.equal(result.additions, 0);
+  });
+
+  it("narrows the comparison to a pathspec", async () => {
+    const result = await store.compare("demo", "main", "fix/TEST-1", { path: "docs/readme.md" });
+    assert.deepEqual(
+      result.files.map((file) => file.path),
+      ["docs/readme.md"],
+    );
+    assert.equal(result.totalFiles, 1);
+    assert.equal(result.path, "docs/readme.md");
+  });
+
+  it("caps the rows but keeps the totals over every file", async () => {
+    const result = await store.compare("demo", "main", "fix/TEST-1", { maxFiles: 1 });
+    assert.equal(result.files.length, 1);
+    assert.equal(result.totalFiles, 3);
+    assert.equal(result.additions, 3);
+    assert.equal(result.deletions, 1);
+    assert.equal(result.truncated, true);
+    assert.equal(result.outputTruncated, false);
+  });
+
+  it("never takes a cap of zero", async () => {
+    const result = await store.compare("demo", "main", "fix/TEST-1", { maxFiles: 0 });
+    assert.equal(result.maxFiles, 1);
+    assert.equal(result.files.length, 1);
+  });
+
+  it("falls back to the two-dot diff when the refs share no root", async () => {
+    const result = await store.compare("demo", "main", "feat/ORPHAN");
+    assert.equal(result.mergeBase, undefined);
+    assert.equal(result.mergeBaseRequested, true);
+    assert.equal(result.mergeBaseMissing, true);
+    assert.deepEqual(
+      result.files.map((file) => `${file.status} ${file.path}`),
+      ["D src/index.tsx", "D src/merged.ts", "A src/orphan.ts"],
+    );
+  });
+
+  it("answers an identical pair with no files", async () => {
+    const result = await store.compare("demo", "fix/TEST-1", "fix/TEST-1");
+    assert.deepEqual(result.files, []);
+    assert.equal(result.totalFiles, 0);
+    assert.equal(result.truncated, false);
+  });
+
+  it("names whichever ref is missing", async () => {
+    await assert.rejects(store.compare("demo", "no/such", "main"), NotFoundError);
+    await assert.rejects(store.compare("demo", "main", "no/such"), NotFoundError);
+    const error = (await store.compare("demo", "main", "no/such").catch((thrown) => thrown)) as Error;
+    assert.match(error.message, /"no\/such"/);
+  });
+});
+
+describe("diff_file", () => {
+  it("returns one file's patch, scoped by the path", async () => {
+    const result = await store.diffFile("demo", "src/index.tsx", "main", "fix/TEST-1");
+    assert.equal(result.path, "src/index.tsx");
+    assert.equal(result.from, "main");
+    assert.equal(result.to, "fix/TEST-1");
+    assert.equal(result.context, 3);
+    assert.equal(result.binary, false);
+    assert.equal(result.truncated, false);
+    assert.match(result.patch, /^diff --git a\/src\/index\.tsx b\/src\/index\.tsx\n/);
+    assert.match(result.patch, /\n-export const hello = 'main';\n\+export const hello = 'fix\/TEST-1';\n$/);
+  });
+
+  it("honours the context width, and clamps it at ten", async () => {
+    const parent = (await store.getCommit("demo", "feat/CTX")).parents[0] ?? "";
+    const wide = await store.diffFile("demo", "src/context.ts", parent, "feat/CTX");
+    const tight = await store.diffFile("demo", "src/context.ts", parent, "feat/CTX", { context: 0 });
+    assert.equal(wide.context, 3);
+    assert.equal(tight.context, 0);
+    assert.match(wide.patch, /^ export const row4 = 4;$/m, "three lines of context are shown");
+    assert.match(wide.patch, /^ export const row6 = 6;$/m);
+    // At context 0 git still names the nearest preceding line in the hunk
+    // header (`@@ -5 +5 @@ export const row4 = 4;`, measured), but it is not a
+    // context line: no line of the patch starts with a space.
+    assert.doesNotMatch(tight.patch, /^ export const row4 = 4;$/m);
+    assert.match(tight.patch, /^@@ -5 \+5 @@/m);
+    assert.match(tight.patch, /^-export const row5 = 5;$/m);
+    assert.match(tight.patch, /^\+export const row5 = 'edited';$/m);
+
+    const clamped = await store.diffFile("demo", "src/index.tsx", "main", "fix/TEST-1", {
+      context: 99,
+    });
+    assert.equal(clamped.context, 10);
+  });
+
+  it("answers a path that did not change with an empty patch", async () => {
+    const result = await store.diffFile("demo", "src/index.tsx", "main", "main");
+    assert.equal(result.patch, "");
+    assert.equal(result.binary, false);
+  });
+
+  it("reports a binary file instead of a patch", async () => {
+    const result = await store.diffFile("demo", "assets/logo.bin", "main", "feat/BINARY");
+    assert.equal(result.binary, true);
+    assert.equal(result.patch, "");
+  });
+
+  it("cuts the patch at the byte cap and says so", async () => {
+    const result = await store.diffFile("demo", "src/index.tsx", "main", "fix/TEST-1", {
+      maxBytes: 60,
+    });
+    assert.equal(result.truncated, true);
+    assert.ok(Buffer.byteLength(result.patch, "utf8") <= 60);
+  });
+
+  it("reads a rename through its new name as an add, because the path scopes the diff", async () => {
+    const parent = (await store.getCommit("demo", "feat/RENAME")).parents[0] ?? "";
+    const result = await store.diffFile("demo", "src/renamed.ts", parent, "feat/RENAME");
+    assert.match(result.patch, /^new file mode 100644$/m);
+    assert.doesNotMatch(result.patch, /^rename from /m);
+  });
+
+  it("reports a path absent from both refs, and a missing ref", async () => {
+    await assert.rejects(
+      store.diffFile("demo", "src/nope.ts", "main", "fix/TEST-1"),
+      NotFoundError,
+    );
+    await assert.rejects(store.diffFile("demo", "src/index.tsx", "main", "no/such"), NotFoundError);
+  });
+});
+
+describe("compare and diff_file rendering", () => {
+  const baseCompare: CompareResult = {
+    project: "demo",
+    from: "main",
+    to: "fix/TEST-1",
+    fromCommit: "a".repeat(40),
+    toCommit: "b".repeat(40),
+    mergeBase: "c".repeat(40),
+    mergeBaseRequested: true,
+    mergeBaseMissing: false,
+    files: [
+      { status: "M", path: "src/index.tsx", additions: 1, deletions: 1, binary: false },
+      {
+        status: "R084",
+        path: "src/renamed.ts",
+        oldPath: "src/many.ts",
+        additions: 1,
+        deletions: 1,
+        binary: false,
+      },
+      { status: "A", path: "assets/logo.bin", binary: true },
+    ],
+    totalFiles: 3,
+    additions: 2,
+    deletions: 2,
+    maxFiles: 100,
+    truncated: false,
+    outputTruncated: false,
+    fetched: false,
+  };
+
+  it("renders the summary, the base and each row", () => {
+    const text = formatCompare(baseCompare);
+    assert.match(
+      text,
+      /^<compare project="demo" from="main" to="fix\/TEST-1" from_commit="a{40}" to_commit="b{40}" merge_base="c{40}" files="3" total_files="3" additions="2" deletions="2" max_files="100"/,
+    );
+    assert.match(text, /\nM\tsrc\/index\.tsx\t\+1 -1\n/);
+    assert.match(text, /\nR084\tsrc\/many\.ts -> src\/renamed\.ts\t\+1 -1\n/);
+    assert.match(text, /\nA\tassets\/logo\.bin\tbinary\n/);
+  });
+
+  it("tells a two-dot diff from one with no merge base", () => {
+    const twoDot = formatCompare({
+      ...baseCompare,
+      mergeBase: undefined,
+      mergeBaseRequested: false,
+    });
+    assert.match(twoDot, /merge_base="off"/);
+    assert.doesNotMatch(twoDot, /no merge base/);
+
+    const unrelated = formatCompare({ ...baseCompare, mergeBase: undefined, mergeBaseMissing: true });
+    assert.match(unrelated, /merge_base="none"/);
+    assert.match(
+      unrelated,
+      /\[no merge base: "main" and "fix\/TEST-1" have unrelated histories, so this is a raw two-dot diff between the two commits\]/,
+    );
+  });
+
+  it("marks a capped list and a narrowed path", () => {
+    const text = formatCompare({
+      ...baseCompare,
+      files: [baseCompare.files[0]!],
+      truncated: true,
+      path: "src",
+    });
+    assert.match(text, /truncated="true"/);
+    assert.match(
+      text,
+      /\[truncated: showing the first 1 of 3 changed files; raise "max_files" for more\]/,
+    );
+    assert.match(text, /path="src"/);
+    assert.match(text, /\[path is a git pathspec, and it narrows rename detection with it/);
+  });
+
+  const diffResult: DiffFileResult = {
+    project: "demo",
+    path: "src/index.tsx",
+    from: "main",
+    to: "fix/TEST-1",
+    fromCommit: "a".repeat(40),
+    toCommit: "b".repeat(40),
+    context: 3,
+    binary: false,
+    patch: "diff --git a/src/index.tsx b/src/index.tsx\n@@ -1 +1 @@\n-old\n+new\n",
+    truncated: false,
+    fetched: false,
+  };
+
+  it("renders the patch verbatim under its header", () => {
+    const text = formatDiffFile(diffResult);
+    assert.match(
+      text,
+      /^<diff project="demo" path="src\/index\.tsx" from="main" to="fix\/TEST-1" from_commit="a{40}" to_commit="b{40}" context="3" bytes="\d+"/,
+    );
+    assert.match(text, /\n@@ -1 \+1 @@\n-old\n\+new\n<\/diff>$/);
+  });
+
+  it("says so when there is nothing to show, and when the patch was cut", () => {
+    const empty = formatDiffFile({ ...diffResult, patch: "" });
+    assert.match(empty, /\(no changes to "src\/index\.tsx" between "main" and "fix\/TEST-1"\)/);
+
+    const cut = formatDiffFile({ ...diffResult, patch: "diff --git a/x b/x\n", truncated: true });
+    assert.match(cut, /truncated="true"/);
+    assert.match(cut, /\[truncated: the patch was cut at the byte limit\]/);
   });
 });
