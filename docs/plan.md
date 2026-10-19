@@ -8,9 +8,9 @@
 > runbook — lives in [`history.md`](history.md). Keep the two apart: this file
 > should not grow as phases land.
 
-Status: phases 0, 1, 2a, 2b, 2c-1, 2c-2, 4a and 4b are released; 3 is implemented and
-verified live (2026-10-19) and awaits its release. The newest tag is `v0.9.0`
-(URLs, search modes and context). Sixteen tools are implemented: the four reads
+Status: phases 0, 1, 2a, 2b, 2c-1, 2c-2, 3, 4a and 4b are released; the newest tag
+is `v0.10.0` (diffs and history). Phase 3 was verified live on 2026-10-19.
+Sixteen tools are implemented: the four reads
 `get_file`, `list_tree`, `list_refs` and `resolve_ref` — exercised against the real
 GitLab on the success path and on a deliberately broken token — plus `search`,
 `pickaxe`, `parse_gitlab_url`, the history and diff five (`log`, `get_commit`,
@@ -608,9 +608,9 @@ found, and a code change only where a check fails.
 | 4a | Search: `search` (`git grep`) and `pickaxe` (`git log -S`) | "Where is this used on `fix/PROJ-7608`, and when did it appear?" answered without a clone |
 | 4b | Polish: GitLab URLs (`parse_gitlab_url`, `url` on `get_file`/`list_tree`, line anchors), `search` output modes and match context, the `cloneStrategy` refusal, truncation and stale-visibility review | A pasted GitLab blob link reads the file — and the line range it names — with no hand decoding; a broad search answers "how many, in which files" without parsing every match; a policy value nothing honours is refused by name rather than stored and ignored |
 
-> **Status:** phases 0, 1, 2a, 2b, 2c-1, 2c-2, 4a and 4b are released; phase 3
-> (diff and history) is implemented and verified live (2026-10-19, including the
-> link shapes 3d added) and awaits its release. The newest tag is `v0.9.0`. The
+> **Status:** phases 0, 1, 2a, 2b, 2c-1, 2c-2, 3, 4a and 4b are released. Phase 3
+> (diff and history) was verified live on 2026-10-19, including the link shapes 3d
+> added; the newest tag is `v0.10.0`. The
 > design, including what was measured, is the section before this table, and each
 > step's outcome is recorded in [`history.md`](history.md).
 
