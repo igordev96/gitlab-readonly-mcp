@@ -6,8 +6,11 @@
 // store's call. This file says what the link looks like, and how to choose among
 // the refs it is handed.
 
-/** A link names a file or a directory. Anything else is refused, never guessed at. */
-export type UrlTarget = "file" | "directory";
+/**
+ * What a link names: a file or a directory to read, a commit to show, or a ref's
+ * history to walk. Anything else is refused, never guessed at.
+ */
+export type UrlTarget = "file" | "directory" | "commit" | "log";
 
 /** 1-based and inclusive. */
 export interface LineRange {
@@ -45,7 +48,7 @@ export interface UrlParts {
   refKind?: "branch" | "tag";
 }
 
-/** Link kinds that are perfectly valid GitLab, but not a file or a directory. */
+/** Link kinds that are perfectly valid GitLab, but not one this server reads. */
 const OTHER_LINKS: Record<string, string> = {
   merge_requests: "a merge request",
   issues: "an issue",
@@ -61,9 +64,19 @@ const OTHER_LINKS: Record<string, string> = {
   raw_path: "an internal path",
 };
 
+/** The link kinds this server reads, and what each one names. */
+const LINK_TARGETS: Record<string, UrlTarget> = {
+  blob: "file",
+  raw: "file",
+  blame: "file",
+  tree: "directory",
+  commit: "commit",
+  commits: "log",
+};
+
 /**
  * Parse a GitLab web URL. Throws with an actionable message for anything that is
- * not a file or directory link, so a link to a pipeline says so instead of
+ * not a link this server reads, so a link to a pipeline says so instead of
  * quietly reading something else.
  *
  * `expectedHost` is `GITLAB_HOST`. A link to some other instance is refused:
@@ -113,9 +126,9 @@ export function parseGitlabUrl(input: string, expectedHost: string): ParsedGitla
   const marker = pathname.indexOf("/-/");
   if (marker === -1) {
     throw new Error(
-      `"${raw}" is not a file or directory link (it has no "/-/"). ` +
+      `"${raw}" is not a link this server reads (it has no "/-/"). ` +
         "GitLab file links look like /<project>/-/blob/<ref>/<path>; " +
-        "a clone URL names a repository, not a file.",
+        "a clone URL names a repository, not a file or a commit.",
     );
   }
 
@@ -130,29 +143,30 @@ export function parseGitlabUrl(input: string, expectedHost: string): ParsedGitla
   const tail = slash === -1 ? "" : rest.slice(slash + 1);
 
   if (!tail) {
-    throw new Error(
-      segment === "tree"
-        ? `"${raw}" names no ref: a tree link needs /-/tree/<ref>.`
-        : `"${raw}" names no ref and no path.`,
-    );
-  }
-
-  if (segment === "commit" || segment === "commits") {
-    throw new Error(
-      `"${raw}" is a commit link, not a file or directory: it names no path. ` +
-        "Read the file with `ref` and `path`, or resolve the revision with `resolve_ref`.",
-    );
+    if (segment === "tree") {
+      throw new Error(`"${raw}" names no ref: a tree link needs /-/tree/<ref>.`);
+    }
+    if (segment === "commit") {
+      throw new Error(`"${raw}" names no commit: a commit link needs /-/commit/<sha>.`);
+    }
+    if (segment === "commits") {
+      throw new Error(`"${raw}" names no ref: a history link needs /-/commits/<ref>.`);
+    }
+    throw new Error(`"${raw}" names no ref and no path.`);
   }
 
   const other = OTHER_LINKS[segment];
   if (other) {
-    throw new Error(`"${raw}" is ${other} link, not a file or directory.`);
+    throw new Error(
+      `"${raw}" is ${other} link; this server reads file, directory, commit and history links.`,
+    );
   }
 
-  if (segment !== "blob" && segment !== "raw" && segment !== "blame" && segment !== "tree") {
+  const target = LINK_TARGETS[segment];
+  if (!target) {
     throw new Error(
-      `"${raw}" is not a file or directory link ("/-/${segment}/" is not something ` +
-        "this server reads). Accepted: /-/blob/, /-/raw/, /-/tree/ and /-/blame/.",
+      `"${raw}" is not a link this server reads ("/-/${segment}/" is not one of them). ` +
+        "Accepted: /-/blob/, /-/raw/, /-/tree/, /-/blame/, /-/commit/ and /-/commits/.",
     );
   }
 
@@ -160,7 +174,7 @@ export function parseGitlabUrl(input: string, expectedHost: string): ParsedGitla
   return {
     host,
     project,
-    target: segment === "tree" ? "directory" : "file",
+    target,
     rest: tail,
     lines: parseLineAnchor(url.hash),
     refTypeHint: refType === "tags" ? "tag" : refType === "heads" ? "branch" : undefined,

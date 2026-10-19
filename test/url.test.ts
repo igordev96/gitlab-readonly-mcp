@@ -9,7 +9,7 @@ import type { Config } from "../src/config.js";
 import { Git } from "../src/git.js";
 import { RepoStore, sliceLines } from "../src/repoStore.js";
 import { conflictingProject, formatRangeBody } from "../src/tools/files.js";
-import { formatUrl } from "../src/tools/url.js";
+import { formatUrl, linkTargetRefusal } from "../src/tools/url.js";
 import { parseGitlabUrl, parseLineAnchor, resolveUrlParts } from "../src/url.js";
 import { buildFixture, commitOnBranch } from "./fixture.js";
 
@@ -93,12 +93,21 @@ describe("parseGitlabUrl", () => {
     );
   });
 
-  it("refuses a commit link by name rather than treating it as a path", () => {
-    assert.throws(
-      () => parseGitlabUrl(`${HOST}/demo/-/commit/abc1234`, HOST),
-      /is a commit link, not a file or directory/,
-    );
-    assert.throws(() => parseGitlabUrl(`${HOST}/demo/-/commits/main`, HOST), /is a commit link/);
+  it("reads commit and history links as commits and histories, not as paths", () => {
+    const commit = parseGitlabUrl(`${HOST}/demo/-/commit/abc1234`, HOST);
+    assert.equal(commit.target, "commit");
+    assert.equal(commit.rest, "abc1234");
+
+    const history = parseGitlabUrl(`${HOST}/demo/-/commits/main/src/index.tsx`, HOST);
+    assert.equal(history.target, "log");
+    assert.equal(history.rest, "main/src/index.tsx");
+    assert.equal(parseGitlabUrl(`${HOST}/demo/-/commits/main`, HOST).rest, "main");
+  });
+
+  it("refuses a commit or history link that names nothing to read", () => {
+    assert.throws(() => parseGitlabUrl(`${HOST}/demo/-/commit`, HOST), /names no commit/);
+    assert.throws(() => parseGitlabUrl(`${HOST}/demo/-/commits`, HOST), /names no ref/);
+    assert.throws(() => parseGitlabUrl(`${HOST}/demo/-/commit/`, HOST), /names no commit/);
   });
 
   it("refuses merge request and other non-file links by name", () => {
@@ -112,10 +121,10 @@ describe("parseGitlabUrl", () => {
   it("refuses an unknown segment, a clone URL, a bare project and junk", () => {
     assert.throws(
       () => parseGitlabUrl(`${HOST}/demo/-/something/1`, HOST),
-      /is not a file or directory link/,
+      /is not a link this server reads/,
     );
-    assert.throws(() => parseGitlabUrl(`${HOST}/demo.git`, HOST), /is not a file or directory link/);
-    assert.throws(() => parseGitlabUrl(`${HOST}/demo`, HOST), /is not a file or directory link/);
+    assert.throws(() => parseGitlabUrl(`${HOST}/demo.git`, HOST), /is not a link this server reads/);
+    assert.throws(() => parseGitlabUrl(`${HOST}/demo`, HOST), /is not a link this server reads/);
     assert.throws(() => parseGitlabUrl("not a url at all", HOST), /Not a URL/);
     assert.throws(() => parseGitlabUrl("   ", HOST), /must not be empty/);
   });
@@ -279,6 +288,37 @@ describe("RepoStore.resolveUrl", () => {
     );
   });
 
+  it("resolves a commit link to the revision it names, with no path", async () => {
+    const branch = await store.resolveUrl(blob("fix/TEST-1/src/index.tsx"));
+    const parsed = await store.resolveUrl(`${HOST}/demo/-/commit/${branch.commit}`);
+    assert.equal(parsed.target, "commit");
+    assert.equal(parsed.ref, branch.commit);
+    assert.equal(parsed.path, "");
+    assert.equal(parsed.commit, branch.commit);
+    // A sha is not one of the project's refs, so the header says so — but the
+    // "path may have lost part of it" note is not written, because a commit
+    // link carries no path, and neither is a `path` attribute invented for it.
+    assert.equal(parsed.refConfirmed, false);
+    const rendered = formatUrl(parsed);
+    assert.doesNotMatch(rendered, /path may have lost part of it/);
+    assert.doesNotMatch(rendered, /\bpath="/);
+    assert.match(rendered, new RegExp(`commit="${branch.commit}"`));
+  });
+
+  it("splits a history link's pathspec off its ref the way a blob path is split", async () => {
+    const parsed = await store.resolveUrl(`${HOST}/demo/-/commits/fix/TEST-1/src/index.tsx`);
+    assert.equal(parsed.target, "log");
+    assert.equal(parsed.ref, "fix/TEST-1");
+    assert.equal(parsed.path, "src/index.tsx");
+    assert.equal(parsed.refConfirmed, true);
+
+    const whole = await store.resolveUrl(`${HOST}/demo/-/commits/main`);
+    assert.equal(whole.ref, "main");
+    assert.equal(whole.path, "");
+    // A history link with no pathspec is the whole history, not a mistake.
+    assert.doesNotMatch(formatUrl(whole), /names a ref but no file/);
+  });
+
   it("honours a #L2-4 anchor all the way into the read", async () => {
     const parsed = await store.resolveUrl(blob("fix/TEST-1/src/lines.txt?a=1#L2-4"));
     assert.deepEqual(parsed.lines, { from: 2, to: 4 });
@@ -394,5 +434,38 @@ describe("formatUrl", () => {
     const parsed = await store.resolveUrl(tree("main"));
     assert.equal(parsed.path, "");
     assert.match(formatUrl(parsed), /path="\/"/);
+  });
+
+  it("renders a history link's pathspec, and an empty path when it names none", async () => {
+    const withPath = await store.resolveUrl(`${HOST}/demo/-/commits/fix/TEST-1/src/index.tsx`);
+    assert.match(formatUrl(withPath), /target="log"/);
+    assert.match(formatUrl(withPath), /path="src\/index\.tsx"/);
+
+    const whole = await store.resolveUrl(`${HOST}/demo/-/commits/main`);
+    assert.match(formatUrl(whole), /target="log" ref="main" path=""/);
+  });
+});
+
+describe("linkTargetRefusal", () => {
+  it("names the tool that reads the link instead", () => {
+    const blobLink = blob("main/a.ts");
+    assert.equal(
+      linkTargetRefusal(blobLink, "file", "commit"),
+      `"${blobLink}" is a file link; use get_file for it.`,
+    );
+    assert.match(
+      linkTargetRefusal("u", "directory", "file") ?? "",
+      /is a directory link; use list_tree for it\./,
+    );
+    assert.match(
+      linkTargetRefusal("u", "commit", "log") ?? "",
+      /is a commit link; use get_commit for it\./,
+    );
+    assert.match(linkTargetRefusal("u", "log", "commit") ?? "", /is a history link; use log for it\./);
+  });
+
+  it("stays quiet for the link the tool does read", () => {
+    assert.equal(linkTargetRefusal("u", "commit", "commit"), undefined);
+    assert.equal(linkTargetRefusal("u", "file", "file"), undefined);
   });
 });

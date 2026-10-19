@@ -4,7 +4,7 @@ import { Git, GitError, type GitRunResult } from "./git.js";
 import { explainGitError } from "./gitDiagnostics.js";
 import { RepoRegistry, type CloneStrategy, type RepoEntry, type RepoSource } from "./registry.js";
 import { SourceManager, type GitSource } from "./sources.js";
-import { parseGitlabUrl, resolveUrlParts, type LineRange } from "./url.js";
+import { parseGitlabUrl, resolveUrlParts, type LineRange, type UrlTarget } from "./url.js";
 
 const PROJECT_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 export const DEFAULT_FILE_MAX_BYTES = 200_000;
@@ -128,10 +128,13 @@ export interface ResolvedUrl {
   url: string;
   host: string;
   project: string;
-  target: "file" | "directory";
+  target: UrlTarget;
   /** The ref, split out of the URL using the project's own refs. */
   ref: string;
-  /** File or directory path; empty for a `/-/tree/<ref>` root link. */
+  /**
+   * File or directory path; empty for a `/-/tree/<ref>` root link, for a commit
+   * link — which names no path — and for a history link with no pathspec.
+   */
   path: string;
   /** True when `ref` is a ref this project has, rather than the first segment. */
   refConfirmed: boolean;
@@ -1926,6 +1929,10 @@ export class RepoStore {
    * error here: the result says `refConfirmed: false` or leaves `commit` unset, and
    * the reader that follows fails with the usual close-match suggestions, which
    * help more than a parse-level complaint would.
+   *
+   * The ref-and-path split is the same for every link kind: a `/-/commit/<sha>`
+   * link simply has no path, so the revision comes back as `ref` and `path` is
+   * empty, and a history link's pathspec is split off the same way a blob path is.
    */
   async resolveUrl(url: string, options: { resolve?: boolean } = {}): Promise<ResolvedUrl> {
     const parsed = parseGitlabUrl(url, this.config.host);

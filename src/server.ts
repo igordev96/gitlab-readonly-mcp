@@ -40,8 +40,10 @@ export function createServer(config: Config, store: RepoStore): McpServer {
         "`blame` says who last touched a line of a file, `compare` summarises what " +
         "changed between two refs from their merge base, and `diff_file` is one " +
         "file's patch. A GitLab web link " +
-        "can be handed to `get_file` or `list_tree` as `url`, or inspected with " +
-        "`parse_gitlab_url`. Repositories are " +
+        "can be handed to `get_file`, `list_tree`, `log`, `get_commit` or `blame` as " +
+        "`url` — a `/-/commit/` link to `get_commit`, a `/-/commits/` link to `log`, a " +
+        "blame or blob link to `blame` — or inspected with `parse_gitlab_url`. " +
+        "Repositories are " +
         "mirrored on first use; `list_repos` reports what is registered and how fresh " +
         "it is, `sync_repo` fetches one immediately, and `remove_repo` forgets one.",
     },

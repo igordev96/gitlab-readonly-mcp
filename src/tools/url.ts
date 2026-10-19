@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { NotFoundError, type RepoStore, type ResolvedUrl } from "../repoStore.js";
+import type { UrlTarget } from "../url.js";
 import {
   SYNCED_AT_UNKNOWN,
   errorResult,
@@ -14,13 +15,16 @@ import {
  * did not resolve cleanly — why, in the same voice as the tools it feeds.
  */
 export function formatUrl(result: ResolvedUrl): string {
+  // A path is what a file, directory or history link carries; a commit link
+  // names no path, so printing `path="/"` for one would invent a fact.
+  const showsPath = result.target !== "commit";
   const attributes = [
     `url="${result.url}"`,
     `host="${result.host}"`,
     `project="${result.project}"`,
     `target="${result.target}"`,
     `ref="${result.ref}"`,
-    `path="${result.path || "/"}"`,
+    showsPath ? `path="${result.path || (result.target === "log" ? "" : "/")}"` : undefined,
     result.lines ? `lines="${result.lines.from}-${result.lines.to}"` : undefined,
     result.refKind ? `ref_kind="${result.refKind}"` : undefined,
     `ref_confirmed="${result.refConfirmed ? "true" : "false"}"`,
@@ -42,7 +46,9 @@ export function formatUrl(result: ResolvedUrl): string {
       "[not resolved: resolve=false, so the ref was split at the first segment and " +
         "nothing was read from the project]",
     );
-  } else if (!result.refConfirmed) {
+  } else if (!result.refConfirmed && result.target !== "commit") {
+    // A commit link names a revision, not a ref-plus-path, so there is no path
+    // it could have lost and nothing to warn about.
     notes.push(
       `[no ref of ${result.project} matches the start of this link, so the ref was read ` +
         `as "${result.ref}" and the path may have lost part of it; a read would list close matches]`,
@@ -59,6 +65,32 @@ export function formatUrl(result: ResolvedUrl): string {
   return `<url ${attributes}>\n${footer ? `${footer}\n` : ""}</url>`;
 }
 
+/** Which tool reads which kind of link, and how the link is described. */
+const LINK_TOOLS: Record<UrlTarget, { label: string; tool: string }> = {
+  file: { label: "a file link", tool: "get_file" },
+  directory: { label: "a directory link", tool: "list_tree" },
+  commit: { label: "a commit link", tool: "get_commit" },
+  log: { label: "a history link", tool: "log" },
+};
+
+/**
+ * The refusal for a link a tool does not read, naming the tool that does.
+ *
+ * Every reader of `url` routes through here, so the wording cannot drift apart
+ * tool by tool — and a link is never quietly read as something else.
+ */
+export function linkTargetRefusal(
+  url: string,
+  actual: UrlTarget,
+  wanted: UrlTarget,
+): string | undefined {
+  if (actual === wanted) {
+    return undefined;
+  }
+  const { label, tool } = LINK_TOOLS[actual];
+  return `"${url}" is ${label}; use ${tool} for it.`;
+}
+
 export function registerUrlTools(server: McpServer, store: RepoStore): void {
   server.registerTool(
     "parse_gitlab_url",
@@ -67,11 +99,13 @@ export function registerUrlTools(server: McpServer, store: RepoStore): void {
       description:
         "Turn a GitLab web link into the project, ref, path and line range a read needs — " +
         "including a ref that contains slashes, which is resolved against the project's own " +
-        "refs. Accepts /-/blob/, /-/raw/, /-/tree/ and /-/blame/ links; commit, merge request " +
-        "and other links are refused by name rather than guessed at. The link's host must be " +
-        "GITLAB_HOST. Resolving may mirror the project on first use; set `resolve: false` to " +
-        "parse offline without touching it. `get_file` and `list_tree` accept a `url` directly, " +
-        "so this tool is for inspecting a link, not for reading.",
+        "refs. Accepts /-/blob/, /-/raw/, /-/tree/ and /-/blame/ links, which name a file or a " +
+        "directory, and /-/commit/<sha> and /-/commits/<ref>[/<path>], which name a commit and a " +
+        "history; merge request and other links are refused by name rather than guessed at. The " +
+        "link's host must be GITLAB_HOST. Resolving may mirror the project on first use; set " +
+        "`resolve: false` to parse offline without touching it. `get_file`, `list_tree`, `log`, " +
+        "`get_commit` and `blame` accept a `url` directly, so this tool is for inspecting a link, " +
+        "not for reading.",
       inputSchema: {
         url: z
           .string()

@@ -166,6 +166,81 @@ describe("MCP protocol", () => {
     assert.match(textOf(blamed), /\n  1: export const hello = 'fix\/TEST-1';\n/);
   });
 
+  it("reads history through a pasted link, and names the tool a link belongs to", async () => {
+    const resolved = await client.callTool({
+      name: "resolve_ref",
+      arguments: { project: "demo", ref: "fix/TEST-1" },
+    });
+    const sha = /commit="([0-9a-f]{40})"/.exec(textOf(resolved))?.[1];
+    assert.ok(sha, `no sha in ${textOf(resolved)}`);
+
+    const history = await client.callTool({
+      name: "log",
+      arguments: { url: "file:///demo/-/commits/fix/TEST-1/src/index.tsx" },
+    });
+    assert.equal(history.isError, undefined);
+    assert.match(
+      textOf(history),
+      /<log project="demo" ref="fix\/TEST-1" commit="[0-9a-f]{40}" path="src\/index\.tsx"/,
+    );
+
+    const commit = await client.callTool({
+      name: "get_commit",
+      arguments: { url: `file:///demo/-/commit/${sha}` },
+    });
+    assert.equal(commit.isError, undefined);
+    assert.match(textOf(commit), new RegExp(`<commit project="demo" rev="${sha}" sha="${sha}"`));
+
+    const blamed = await client.callTool({
+      name: "blame",
+      arguments: { url: "file:///demo/-/blame/fix/TEST-1/src/index.tsx#L1-1" },
+    });
+    assert.equal(blamed.isError, undefined);
+    assert.match(
+      textOf(blamed),
+      /<blame project="demo" ref="fix\/TEST-1" commit="[0-9a-f]{40}" path="src\/index\.tsx" lines="1-1" file_lines="1" groups="1" count="1"/,
+    );
+
+    // Each reader names the tool that does read the link it was handed, rather
+    // than reading something the link did not point at.
+    const wrongLog = await client.callTool({
+      name: "log",
+      arguments: { url: `file:///demo/-/commit/${sha}` },
+    });
+    assert.equal(wrongLog.isError, true);
+    assert.match(textOf(wrongLog), /is a commit link; use get_commit for it\./);
+
+    const wrongCommit = await client.callTool({
+      name: "get_commit",
+      arguments: { url: "file:///demo/-/blob/fix/TEST-1/src/index.tsx" },
+    });
+    assert.equal(wrongCommit.isError, true);
+    assert.match(textOf(wrongCommit), /is a file link; use get_file for it\./);
+
+    const wrongBlame = await client.callTool({
+      name: "blame",
+      arguments: { url: "file:///demo/-/tree/main/src" },
+    });
+    assert.equal(wrongBlame.isError, true);
+    assert.match(textOf(wrongBlame), /is a directory link; use list_tree for it\./);
+
+    // A project contradicting the link is caught before anything is read, and a
+    // blame link naming no file is refused rather than blamed as something else.
+    const conflicting = await client.callTool({
+      name: "log",
+      arguments: { project: "other/repo", url: "file:///demo/-/commits/main" },
+    });
+    assert.equal(conflicting.isError, true);
+    assert.match(textOf(conflicting), /names "demo", but project="other\/repo"/);
+
+    const noFile = await client.callTool({
+      name: "blame",
+      arguments: { url: "file:///demo/-/blame/fix/TEST-1" },
+    });
+    assert.equal(noFile.isError, true);
+    assert.match(textOf(noFile), /names a ref but no file path/);
+  });
+
   it("exposes compare and diff_file, and summarises a branch", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name);

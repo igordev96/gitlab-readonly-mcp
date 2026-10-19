@@ -20,6 +20,7 @@ import {
   refreshFailedNote,
   textResult,
 } from "./result.js";
+import { linkTargetRefusal } from "./url.js";
 
 const DEFAULT_MAX_BYTES = 200_000;
 
@@ -155,8 +156,11 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
           return errorResult(conflict);
         }
         const fromUrl = asked ? await store.resolveUrl(asked) : undefined;
-        if (fromUrl && fromUrl.target !== "file") {
-          return errorResult(`"${asked}" is a directory link; use list_tree for it.`);
+        if (fromUrl) {
+          const wrong = linkTargetRefusal(asked!, fromUrl.target, "file");
+          if (wrong) {
+            return errorResult(wrong);
+          }
         }
         if (fromUrl && !fromUrl.path) {
           return errorResult(`"${asked}" names a ref but no file path.`);
@@ -293,8 +297,11 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
           return errorResult(conflict);
         }
         const fromUrl = asked ? await store.resolveUrl(asked) : undefined;
-        if (fromUrl && fromUrl.target === "file") {
-          return errorResult(`"${asked}" is a file link; use get_file for it.`);
+        if (fromUrl) {
+          const wrong = linkTargetRefusal(asked!, fromUrl.target, "directory");
+          if (wrong) {
+            return errorResult(wrong);
+          }
         }
 
         const target = (fromUrl?.project ?? project?.trim()) || config.defaultProject;

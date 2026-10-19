@@ -21,7 +21,7 @@ import {
   type RepoStore,
 } from "../repoStore.js";
 import type { LineRange } from "../url.js";
-import { matchLine } from "./search.js";
+import { conflictingProject } from "./files.js";
 import {
   NO_PROJECT,
   SYNCED_AT_UNKNOWN,
@@ -30,6 +30,8 @@ import {
   refreshFailedNote,
   textResult,
 } from "./result.js";
+import { matchLine } from "./search.js";
+import { linkTargetRefusal } from "./url.js";
 
 /** Flatten a value that belongs on one line of a header or a row. */
 function oneLine(value: string): string {
@@ -340,7 +342,10 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
         "`--follow` accepts only one path and walks renames backwards; pass the new name or use " +
         "`get_commit` when you need to see the rename itself. " +
         "`limit` bounds the answer; when it hides older commits the result says so rather than " +
-        "inventing a total. Use `get_commit` on a row's full sha to see what it changed.",
+        "inventing a total. Use `get_commit` on a row's full sha to see what it changed. " +
+        "Give either `url` — a GitLab `/-/commits/<ref>[/<path>]` link, e.g. " +
+        "'https://gitlab.example.com/group/repo/-/commits/fix/PROJ-7608/src/index.tsx' — or `ref` " +
+        "and `path`; the link's host must be GITLAB_HOST.",
       inputSchema: {
         project: z
           .string()
@@ -360,6 +365,12 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
           .describe(
             "A git pathspec to limit the walk, e.g. 'src/components/*.tsx'. History stops at a rename: a file's earlier names are not followed.",
           ),
+        url: z
+          .string()
+          .optional()
+          .describe(
+            "A GitLab history link, e.g. 'https://gitlab.example.com/group/repo/-/commits/develop'. Replaces ref and path; the host must be GITLAB_HOST.",
+          ),
         limit: z
           .number()
           .int()
@@ -372,20 +383,44 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ project, ref, path, limit }) => {
-      const target = project?.trim() || config.defaultProject;
-      if (!target) {
-        return errorResult(NO_PROJECT);
-      }
+    async ({ project, ref, path, url, limit }) => {
+      const asked = url?.trim() ? url.trim() : undefined;
+      const named = project?.trim() || config.defaultProject;
 
       try {
-        const result = await store.log(target, { ref, path, limit });
+        const conflict = conflictingProject(asked, project, config);
+        if (conflict) {
+          return errorResult(conflict);
+        }
+        const fromUrl = asked ? await store.resolveUrl(asked) : undefined;
+        if (fromUrl) {
+          const wrong = linkTargetRefusal(asked!, fromUrl.target, "log");
+          if (wrong) {
+            return errorResult(wrong);
+          }
+        }
+
+        const target = fromUrl?.project ?? named;
+        if (!target) {
+          return errorResult(NO_PROJECT);
+        }
+
+        const result = await store.log(target, {
+          ref: fromUrl?.ref ?? ref,
+          path: fromUrl ? fromUrl.path || undefined : path,
+          limit,
+        });
         return textResult(formatLog(result));
       } catch (error) {
         if (error instanceof NotFoundError) {
           return errorResult(error.message);
         }
-        return errorResult(`Failed to list history in "${target}".\n${failureMessage(error)}`);
+        if (asked) {
+          return errorResult(`Failed to list history for "${asked}".\n${failureMessage(error)}`);
+        }
+        return errorResult(
+          `Failed to list history in "${named ?? "the repository"}".\n${failureMessage(error)}`,
+        );
       }
     },
   );
@@ -401,18 +436,27 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
         "`patch: true` appends the unified diff, capped by `max_bytes`. " +
         "A merge commit reports `merge=\"true\"` and no file list, because git shows no diff for a " +
         "merge by default: compare a parent with the commit to see what it brought in. " +
-        "The result states the `commit` it resolved `rev` to and `synced_at`.",
+        "The result states the `commit` it resolved `rev` to and `synced_at`. " +
+        "Give either `url` — a GitLab `/-/commit/<sha>` link — or `rev`; the link's host must be " +
+        "GITLAB_HOST.",
       inputSchema: {
         rev: z
           .string()
+          .optional()
           .describe(
-            "The commit to read: a full or abbreviated sha, or a branch or tag name that resolves to one.",
+            "The commit to read: a full or abbreviated sha, or a branch or tag name that resolves to one. Required unless `url` is given.",
           ),
         project: z
           .string()
           .optional()
           .describe(
             "GitLab project path, e.g. 'group/subgroup/repo'. Defaults to GITLAB_DEFAULT_PROJECT.",
+          ),
+        url: z
+          .string()
+          .optional()
+          .describe(
+            "A GitLab commit link, e.g. 'https://gitlab.example.com/group/repo/-/commit/8297d0da'. Replaces rev; the host must be GITLAB_HOST.",
           ),
         patch: z
           .boolean()
@@ -432,20 +476,48 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ rev, project, patch, max_bytes }) => {
-      const target = project?.trim() || config.defaultProject;
-      if (!target) {
-        return errorResult(NO_PROJECT);
-      }
+    async ({ rev, project, url, patch, max_bytes }) => {
+      const asked = url?.trim() ? url.trim() : undefined;
+      const named = project?.trim() || config.defaultProject;
 
       try {
-        const result = await store.getCommit(target, rev, { patch, maxBytes: max_bytes });
+        const conflict = conflictingProject(asked, project, config);
+        if (conflict) {
+          return errorResult(conflict);
+        }
+        const fromUrl = asked ? await store.resolveUrl(asked) : undefined;
+        if (fromUrl) {
+          const wrong = linkTargetRefusal(asked!, fromUrl.target, "commit");
+          if (wrong) {
+            return errorResult(wrong);
+          }
+        }
+
+        const target = fromUrl?.project ?? named;
+        if (!target) {
+          return errorResult(NO_PROJECT);
+        }
+
+        // A resolved link already holds the revision it points at; the ref it
+        // split out is the fallback that carries an unresolved rev into the
+        // store's close-match message rather than a complaint here.
+        const useRev = fromUrl ? fromUrl.commit ?? fromUrl.ref : rev;
+        if (!useRev) {
+          return errorResult("Provide `url`, or `rev`.");
+        }
+
+        const result = await store.getCommit(target, useRev, { patch, maxBytes: max_bytes });
         return textResult(formatCommit(result));
       } catch (error) {
         if (error instanceof NotFoundError) {
           return errorResult(error.message);
         }
-        return errorResult(`Failed to read "${rev}" in "${target}".\n${failureMessage(error)}`);
+        if (asked) {
+          return errorResult(`Failed to read "${asked}".\n${failureMessage(error)}`);
+        }
+        return errorResult(
+          `Failed to read "${rev}" in "${named ?? "the repository"}".\n${failureMessage(error)}`,
+        );
       }
     },
   );
@@ -461,7 +533,9 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
         "`lines` narrows the blame to a range (`\"118-126\"`, or `\"118\"`), and a range past the end is " +
         "clamped and reported rather than treated as an error. `max_lines` caps how many lines come back. " +
         "The ref defaults to the repository's default branch, and the result states the `commit` it " +
-        "blamed and `synced_at`. A binary file is refused: git blames one, but its lines carry NUL bytes.",
+        "blamed and `synced_at`. A binary file is refused: git blames one, but its lines carry NUL bytes. " +
+        "Give either `url` — a GitLab `/-/blame/<ref>/<path>` link, whose `#L12-20` anchor narrows the " +
+        "blame — or `ref` and `path`; the link's host must be GITLAB_HOST.",
       inputSchema: {
         project: z
           .string()
@@ -469,18 +543,29 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
           .describe(
             "GitLab project path, e.g. 'group/subgroup/repo'. Defaults to GITLAB_DEFAULT_PROJECT.",
           ),
-        path: z.string().describe("File path from the repository root, e.g. 'src/index.tsx'."),
+        path: z
+          .string()
+          .optional()
+          .describe(
+            "File path from the repository root, e.g. 'src/index.tsx'. Required unless `url` is given.",
+          ),
         ref: z
           .string()
           .optional()
           .describe(
             "Branch, tag, or commit to blame at, e.g. 'fix/PROJ-7608'. Defaults to the default branch.",
           ),
+        url: z
+          .string()
+          .optional()
+          .describe(
+            "A GitLab file link to blame, e.g. 'https://gitlab.example.com/group/repo/-/blame/develop/src/index.tsx#L12-20'. Replaces ref, path and lines; the host must be GITLAB_HOST.",
+          ),
         lines: z
           .string()
           .optional()
           .describe(
-            "Restrict the blame to a line range: '118' or '118-126' (an `L` prefix is accepted, as in a `#L118-126` link).",
+            "Restrict the blame to a line range: '118' or '118-126' (an `L` prefix is accepted, as in a `#L118-126` link). A `url` with an anchor wins over this.",
           ),
         max_lines: z
           .number()
@@ -494,25 +579,50 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ project, path, ref, lines, max_lines }) => {
-      const target = project?.trim() || config.defaultProject;
-      if (!target) {
-        return errorResult(NO_PROJECT);
-      }
-
-      let range: LineRange | undefined;
-      if (lines !== undefined && lines.trim() !== "") {
-        range = parseLineSpec(lines);
-        if (!range) {
-          return errorResult(
-            `lines must look like "12" or "12-20" (got ${JSON.stringify(lines)}).`,
-          );
-        }
-      }
+    async ({ project, path: filePath, ref, url, lines, max_lines }) => {
+      const asked = url?.trim() ? url.trim() : undefined;
+      const named = project?.trim() || config.defaultProject;
 
       try {
-        const result = await store.blame(target, path, {
-          ref,
+        const conflict = conflictingProject(asked, project, config);
+        if (conflict) {
+          return errorResult(conflict);
+        }
+        const fromUrl = asked ? await store.resolveUrl(asked) : undefined;
+        if (fromUrl) {
+          const wrong = linkTargetRefusal(asked!, fromUrl.target, "file");
+          if (wrong) {
+            return errorResult(wrong);
+          }
+          if (!fromUrl.path) {
+            return errorResult(`"${asked}" names a ref but no file path.`);
+          }
+        }
+
+        const target = fromUrl?.project ?? named;
+        if (!target) {
+          return errorResult(NO_PROJECT);
+        }
+
+        const usePath = fromUrl?.path ?? filePath;
+        if (!usePath) {
+          return errorResult("Provide `url`, or both `ref` and `path`.");
+        }
+
+        // The link's anchor is the narrower instruction when it has one; the
+        // `lines` parameter is the fallback for a plain ref-and-path call.
+        let range: LineRange | undefined = fromUrl?.lines;
+        if (!range && lines !== undefined && lines.trim() !== "") {
+          range = parseLineSpec(lines);
+          if (!range) {
+            return errorResult(
+              `lines must look like "12" or "12-20" (got ${JSON.stringify(lines)}).`,
+            );
+          }
+        }
+
+        const result = await store.blame(target, usePath, {
+          ref: fromUrl?.ref ?? ref,
           lines: range,
           maxLines: max_lines,
         });
@@ -526,7 +636,12 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
         if (error instanceof NotFoundError) {
           return errorResult(error.message);
         }
-        return errorResult(`Failed to blame "${path}" in "${target}".\n${failureMessage(error)}`);
+        if (asked) {
+          return errorResult(`Failed to blame "${asked}".\n${failureMessage(error)}`);
+        }
+        return errorResult(
+          `Failed to blame "${filePath}" in "${named ?? "the repository"}".\n${failureMessage(error)}`,
+        );
       }
     },
   );
