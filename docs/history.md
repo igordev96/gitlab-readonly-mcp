@@ -123,6 +123,10 @@ Running record of things learned while building. Keep appending.
 | 2026-10-19 | **After `opencode service restart` the MCP catalog was briefly empty**, then listed 11 tools; a probe run inside that window would have concluded the server had failed to start. | A live probe must allow a beat after a restart. The tool list the assistant can see is itself the probe: a missing tool means the restart has not landed yet, not that registration is broken. |
 | 2026-10-19 | The restarted server re-ran the released 4b shapes against the pilot as a single probe: `get_file` by URL → `lines="118-126" file_lines="373"`, `parse_gitlab_url` (resolved) → `ref_kind="branch" ref_confirmed="true"` at `8297d0da22…`, `search output="count"` → `count="100" total="682" files="269"`, `output="files"` → 3 paths, `context=2` → `>`-marked hunks with `…`, and `resolve=false` → the `[not resolved: …]` note. | The one place the release could still be wrong — a stale `dist/` — is ruled out: the running process answers with the new code. The version string is not verifiable this way, because MCP reports it in the handshake rather than in tool output; `startup.test.ts` remains its guarantee. |
 | 2026-10-19 | **A link can be well-formed and still name a missing path.** The same probe started from a URL with the right ref and a wrong directory: `parse_gitlab_url` reported `ref_confirmed="true"` and the commit — correctly, since it confirms the *ref* — and only `get_file` refused it (`Path not found: "src/components/Report.tsx" at "fix/PROJ-7608" …`). Unlike a missing ref, that error carries no close-match suggestions. | Left as it is: checking every path would mean walking the tree for a call that only needed to name the link, and the field is named `ref_confirmed`. Recorded because the wrong path was mine and the shape reads easily as "the link is good"; a path-level hint or a `path_confirmed` flag is a candidate for a later phase. |
+| 2026-10-19 | **`/-/commit/<sha>` and `/-/commits/<ref>/<path>` are not file links, and 4b had nothing to hand them to.** A commit link names a revision with no path; a history link names a ref *plus* a pathspec. Reading either through `get_file` would have read something the link did not point at, so 4b refused both by name — leaving a pasted commit link readable only by hand. | 3d grew `UrlTarget` to `file \| directory \| commit \| log`, and the five readers route every refusal through one `linkTargetRefusal`, so a link handed to the wrong tool names the tool that reads it (`"…" is a commit link; use get_commit for it.`). Verified live: four wrong-tool shapes, plus the project-disagreement check (1 ms, before anything was resolved) and a blame link naming no path. |
+| 2026-10-19 | **A commit link has no path, so two "helpful" renderings would have been lies about it.** `formatUrl` printed `path="/"` for any link with an empty path, and warned that "the path may have lost part of it" whenever the ref was unconfirmed — both defensible for a blob link and false for a commit link, whose `ref` is the revision and which carries no path at all. `ref_confirmed="false"` is also expected there: a sha is not a ref of the project. | The path attribute and the lost-path note are suppressed for `target="commit"` (a history link with no pathspec still prints `path=""`), and whether the revision exists is answered by `commit="…"` rather than by `ref_confirmed`. Pinned by unit tests on the renderer and seen live (`target="commit" ref="8297d0da2215…" ref_confirmed="false" commit="8297d0da2215…"`). |
+| 2026-10-19 | **The "token rejected" state of the 4b check does not hold now.** The 3d probe authenticated and fetched: the first call took 2465 ms and the rest 70–200 ms, the mirror's stamp advanced from `2026-10-19T20:52:55.246Z` to `2026-10-19T22:23:31.578Z`, and no result carried `refresh_failed="true"`. | The earlier row stands as a description of a broken token, not of the token. This phase's live check therefore rests on freshly fetched data rather than on the cache, which is the stronger reading — and it removes the last doubt about whether `synced_at` movers were test-shaped. |
+| 2026-10-19 | **In this harness a tool result with `isError` surfaces as the failure of the whole `execute` snippet**, not as a value, and a successful call arrives as its text — a plain string, not `{ content: [...] }`. | A live probe that deliberately exercises a refusal must `try`/`catch` each call and report the caught message, or the successful output of the same snippet is lost. Learned by losing two probe reports to exactly that, and fixed by wrapping every call. |
 
 ---
 
@@ -130,6 +134,63 @@ Running record of things learned while building. Keep appending.
 
 What each phase actually touched. The plan keeps only the design; this is the
 blow-by-blow.
+
+### Phase 3 artifacts
+
+- `docs/plan.md` §4 — the five tools' design, written and reviewed **before** any
+  code (`f257a6b`), including the measured `--name-status`/`--numstat` split (the
+  flags do not combine), the `--numstat -z` rename record with its empty path
+  field, the pathspec-narrows-rename-detection trap, and the decision that
+  `compare` is a capped summary and never a patch. §7 split the phase into 3a–3d.
+- `src/repoStore.ts` — `log`, `getCommit`, `blame`, `compare`, `diffFile`; the
+  two-pass status/count pair and their parsers, `parseBlamePorcelain`,
+  `parsePorcelainLog`, `resolvePair`, and `diffFiles` (shared with `getCommit`
+  from 3c); `DEFAULT_LOG_LIMIT` (20, hard 200), `DEFAULT_BLAME_MAX_LINES` (500,
+  hard 5000), `DEFAULT_COMPARE_MAX_FILES` (100, hard 1000), `HARD_DIFF_CONTEXT`
+  (10) and the binary-patch constant.
+- `src/tools/history.ts` — new: the five tools and `formatLog`, `formatCommit`,
+  `formatBlame`, `formatCompare`, `formatDiffFile`, `parseLineSpec`; from 3d, `url`
+  on `log`/`get_commit`/`blame`, with `rev`/`path` optional because a link can
+  supply them and the link's `#L` anchor winning over `lines`.
+- `src/url.ts`, `src/tools/url.ts`, `src/tools/files.ts` — `UrlTarget` grew
+  `commit` and `log`, both link shapes are parsed (the ref/path split is the same
+  one blob links already used), and one `linkTargetRefusal` words every
+  wrong-tool refusal, with `get_file`/`list_tree` rerouted through it.
+- `src/server.ts` — instructions name the five tools and which link goes to which.
+- `test/history.test.ts` — new: store, parser and renderer tests for all five
+  tools; `test/fixture.ts` gained `addOrphanBranch` (unrelated histories, for
+  `compare`'s fallback) and a mid-file edit branch.
+- `test/url.test.ts`, `test/protocol.test.ts` — commit and history link parsing,
+  the two "names nothing" refusals, `resolveUrl` for both shapes, `formatUrl` and
+  `linkTargetRefusal`, and the URL-driven tool calls plus four refusal shapes over
+  the real MCP surface.
+- Suite: 254 tests / 46 suites at `v0.9.0` → 318 / 55 at 3c → **325 / 56** at 3d.
+- Commits: `f257a6b` the design, `e8f7a62` `log` + `get_commit`, `f353a23`
+  `blame`, `0225aec` `compare` + `diff_file`, `7ba5a68` the link routing.
+- Live checks, all against `example-app` @ `fix/PROJ-7608` (`8297d0da2215…`):
+  3a and 3b probed `log`, `get_commit` and `blame` when they landed (the merge
+  commit `1a0a34c` reported `merge="true"` with two parents and `files="0"`; the
+  blame of lines 118–126 split into `7635450e8668 … 118-121` and
+  `8297d0da2215 … 122-126` with `file_lines="373"`). 3c probed `compare` →
+  `merge_base="1a0a34cc11ed…"`, one file `M … +32 -11`, and `diff_file` from that
+  base → the branch's 2710-byte patch.
+- **3d verified live, after `opencode service restart`** — the assistant's own
+  tool list went from 11 gitlab tools to 16, which is the probe that the restart
+  landed. Through the wired-up server: `parse_gitlab_url` on a commit link →
+  `target="commit" ref="8297d0da2215…" ref_confirmed="false" commit="8297d0da2215…"`
+  with no `path` and no lost-path note; `get_commit` by that link →
+  `rev="8297d0da2215…" parents="1a0a34cc11ed…" author="Author <…>" files="1" additions="32" deletions="11"`;
+  `log` by `/-/commits/fix/PROJ-7608/<373-line path>` → `ref="fix/PROJ-7608"`,
+  the whole path split off as `path=`, `count="20" truncated="true"`; `blame` by
+  `/-/blame/…/Report.tsx#L118-126` → `lines="118-126" file_lines="373" groups="2" count="9"`
+  with the two real groups. Refusals, as worded: commit link to `log`, blob link
+  to `get_commit`, tree link to `blame`, history link to `get_file`, a blame link
+  with no path, and a link that disagrees with `project=` (refused in 1 ms, before
+  resolution). The same run fetched for real — the mirror's stamp advanced to
+  `2026-10-19T22:23:31.578Z` with no `refresh_failed` — so none of it rested on a
+  stale cache. Tests-only remain: blame's binary refusal, `compare`'s
+  unrelated-histories fallback, `compare`/`diff_file` binary refusal, CRLF and a
+  path containing a newline.
 
 ### Phase 4b artifacts
 

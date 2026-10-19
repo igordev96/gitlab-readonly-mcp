@@ -8,14 +8,20 @@
 > runbook — lives in [`history.md`](history.md). Keep the two apart: this file
 > should not grow as phases land.
 
-Status: phases 0, 1, 2a, 2b, 2c-1, 2c-2, 4a and 4b are released; the newest tag
-is `v0.9.0` (URLs, search modes and context). Eleven tools are implemented: the
-four reads `get_file`, `list_tree`, `list_refs` and `resolve_ref` — exercised
-against the real GitLab on the success path and on a deliberately broken token —
-plus `search`, `pickaxe`, `parse_gitlab_url`, `list_repos`, `add_repo`,
-`remove_repo` and `sync_repo`.
-`get_file` and `list_tree` also accept a GitLab web URL, so a link can be read as
-pasted, with its `#L12-20` range, instead of being decoded by hand. A project registers itself the first time it is used, or
+Status: phases 0, 1, 2a, 2b, 2c-1, 2c-2, 4a and 4b are released; 3 is implemented and
+verified live (2026-10-19) and awaits its release. The newest tag is `v0.9.0`
+(URLs, search modes and context). Sixteen tools are implemented: the four reads
+`get_file`, `list_tree`, `list_refs` and `resolve_ref` — exercised against the real
+GitLab on the success path and on a deliberately broken token — plus `search`,
+`pickaxe`, `parse_gitlab_url`, the history and diff five (`log`, `get_commit`,
+`blame`, `compare`, `diff_file`), and `list_repos`, `add_repo`, `remove_repo` and
+`sync_repo`.
+`get_file`, `list_tree`, `log`, `get_commit` and `blame` also accept a GitLab web
+URL — a `/-/blob/`, `/-/raw/` or `/-/blame/` link, a `/-/tree/` link, a
+`/-/commit/<sha>` link, or a `/-/commits/<ref>[/<path>]` link — so a link can be
+read as pasted, with its `#L12-20` range, instead of being decoded by hand. Each
+link kind has one reader, and a link handed to another tool is refused naming the
+tool that would read it. A project registers itself the first time it is used, or
 explicitly with `add_repo`, and its registry entry decides where it is read from: a
 mirror the server keeps fresh, or a clone of your own, which is read, never cloned,
 and fetched only when a ref is missing from it. Its policy (`repos.json`) can
@@ -398,17 +404,28 @@ verified live on 2026-10-19):
 
 **Ergonomics**
 
-**GitLab URLs (4b).** `parse_gitlab_url(url, resolve?)` returns what a link names,
-so a URL can go to a read instead of being decoded by hand; `get_file` and
-`list_tree` also accept `url` directly, which is the common case.
+**GitLab URLs (4b, extended by 3d).** `parse_gitlab_url(url, resolve?)` returns what
+a link names, so a URL can go to a read instead of being decoded by hand;
+`get_file`, `list_tree`, `log`, `get_commit` and `blame` also accept `url` directly,
+which is the common case.
 
 - **Shapes.** `/-/blob/<ref>/<path>` and `/-/raw/<ref>/<path>` name a file;
   `/-/tree/<ref>` and `/-/tree/<ref>/<path>` name a directory;
-  `/-/blame/<ref>/<path>` names a file, and from 3d a blame link is read as a
-  blame. `/-/commit/<sha>` and `/-/commits/<ref>[/<path>]` are likewise handed to
-  `get_commit` and `log` from 3d. Merge requests, issues and the rest stay
-  recognised and refused by name: they are not version-control objects, and
-  guessing would read something the link did not point at.
+  `/-/blame/<ref>/<path>` names a file; `/-/commit/<sha>` names a commit;
+  `/-/commits/<ref>[/<path>]` names a history with an optional pathspec. Merge
+  requests, issues and the rest stay recognised and refused by name: they are not
+  version-control objects, and guessing would read something the link did not point
+  at.
+- **One reader per shape, and no quiet fallback.** `get_file` reads a file link,
+  `list_tree` a directory, `get_commit` a commit, `log` a history, and `blame` a
+  file link (its `#L118-126` anchor narrowing the blame). A link handed to another
+  tool is refused naming the tool that reads it — `"…" is a commit link; use
+  get_commit for it.` — and the check runs before anything is resolved, so a link
+  never turns into a read of something it did not point at.
+- **A commit link names no path**, so its rendering carries no `path` attribute and
+  no "the path may have lost part of it" note; `ref` is the revision, and whether
+  that revision exists is answered by `commit` rather than by `ref_confirmed` (a sha
+  is not a ref of the project, so `ref_confirmed="false"` is expected there).
 - **The project** is everything before the first `/-/`; a trailing `.git`, a
   trailing slash, `?query` and `#fragment` are stripped. **The host must equal
   `GITLAB_HOST`** (scheme and case ignored): a link to another instance is refused
@@ -591,11 +608,11 @@ found, and a code change only where a check fails.
 | 4a | Search: `search` (`git grep`) and `pickaxe` (`git log -S`) | "Where is this used on `fix/PROJ-7608`, and when did it appear?" answered without a clone |
 | 4b | Polish: GitLab URLs (`parse_gitlab_url`, `url` on `get_file`/`list_tree`, line anchors), `search` output modes and match context, the `cloneStrategy` refusal, truncation and stale-visibility review | A pasted GitLab blob link reads the file — and the line range it names — with no hand decoding; a broad search answers "how many, in which files" without parsing every match; a policy value nothing honours is refused by name rather than stored and ignored |
 
-> **Status:** phases 0, 1, 2a, 2b, 2c-1, 2c-2, 4a and 4b are released. The newest
-> tag is `v0.9.0` (4b: GitLab URLs, `search` output modes and context). Phase 3
-> (diff and history) is designed above and split into 3a–3d; **3a is next**. The
-> design, including what was measured, is the section before this table.
-> Per-phase detail: [`history.md`](history.md).
+> **Status:** phases 0, 1, 2a, 2b, 2c-1, 2c-2, 4a and 4b are released; phase 3
+> (diff and history) is implemented and verified live (2026-10-19, including the
+> link shapes 3d added) and awaits its release. The newest tag is `v0.9.0`. The
+> design, including what was measured, is the section before this table, and each
+> step's outcome is recorded in [`history.md`](history.md).
 
 ### Source layout
 
@@ -609,14 +626,14 @@ src/
   repoStore.ts   # project -> source resolution, refs, trees, freshness policy
   sources.ts     # mirror paths, clone, fetch, per-source lock, the sync clock
   registry.ts    # repos.json: per-project source and freshness policy
-  url.ts         # GitLab web URL -> {project, target, rest, lines}     ✅ Phase 4b
+  url.ts         # GitLab web URL -> {project, target, rest, lines}     ✅ Phase 4b/3d
   tools/
     result.ts      # shared tool result shapes and error rendering
     files.ts       # get_file, list_tree (+ `url`)                  ✅ Phase 2b-2/4b
-    url.ts         # parse_gitlab_url                              ✅ Phase 4b
+    url.ts         # parse_gitlab_url, formatUrl, link routing       ✅ Phase 4b/3d
     refs.ts        # list_refs, resolve_ref                        ✅ Phase 2b-1
     repos.ts       # list_repos, sync_repo, add_repo, remove_repo   ✅ Phase 2c-1/2c-2
-    history.ts                                                    (Phase 3)
+    history.ts     # log, get_commit, blame, compare, diff_file (+ `url`) ✅ Phase 3
     search.ts      # search (git grep), pickaxe (git log -S)        ✅ Phase 4a
 test/
   fixture.ts     # builds a throwaway "GitLab" (working repo + bare server)
@@ -626,7 +643,8 @@ test/
   refs.test.ts   # ref listing, resolution, close matches
   tree.test.ts   # directory listings, the ls-tree parser, rendering
   search.test.ts # grep and log -S: parsers, rendering, fixture reads
-  url.test.ts    # GitLab URL shapes, ref resolution, line anchors
+  history.test.ts # log, get_commit, blame, compare and diff_file
+  url.test.ts    # GitLab URL shapes, ref resolution, line anchors, link routing
   repos.test.ts  # rendering the registry listing
   git.test.ts    # the git wrapper
   gitDiagnostics.test.ts  # git stderr -> actionable hint

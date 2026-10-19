@@ -7,16 +7,18 @@ branches that are not checked out locally — without ever touching your working
 tree. Content comes from a local bare mirror the server keeps in a cache
 directory, or from a clone of your own when you register one.
 
-> Phase 4b implementation. Exposes `get_file`, `list_tree`, `list_refs`,
-> `resolve_ref`, `search`, `pickaxe` and `parse_gitlab_url`, plus `list_repos`,
-> `add_repo`, `remove_repo` and `sync_repo` for choosing and controlling where a
-> project is read from. `get_file` and `list_tree` accept a pasted GitLab link as
-> well as `ref` + `path`, so a URL with `#L12-20` reads exactly those lines. A
-> project is read from a bare mirror that keeps itself fresh (TTL + fetch-on-miss),
-> or from a clone of your own, which is read in place and fetched only when a ref
-> it does not have is asked for. See the plan at [`docs/plan.md`](docs/plan.md) —
-> the canonical, in-repo design document — and [`docs/history.md`](docs/history.md)
-> for milestones, findings and per-phase artifacts.
+> Phase 3 implementation. Exposes `get_file`, `list_tree`, `list_refs`,
+> `resolve_ref`, `search`, `pickaxe`, `parse_gitlab_url`, `log`, `get_commit`,
+> `blame`, `compare` and `diff_file`, plus `list_repos`, `add_repo`, `remove_repo`
+> and `sync_repo` for choosing and controlling where a project is read from.
+> `get_file`, `list_tree`, `log`, `get_commit` and `blame` accept a pasted GitLab
+> link as well as `ref` + `path`, so a URL with `#L12-20` reads exactly those
+> lines. A project is read from a bare mirror that keeps itself fresh (TTL +
+> fetch-on-miss), or from a clone of your own, which is read in place and fetched
+> only when a ref it does not have is asked for. See the plan at
+> [`docs/plan.md`](docs/plan.md) — the canonical, in-repo design document — and
+> [`docs/history.md`](docs/history.md) for milestones, findings and per-phase
+> artifacts.
 
 ## Why git instead of the GitLab REST API?
 
@@ -109,6 +111,14 @@ gitlab_get_file(url="https://gitlab.example.com/group/sub/repo/-/blob/fix/PROJ-7
 gitlab_parse_gitlab_url(url="https://gitlab.example.com/group/sub/repo/-/blob/fix/PROJ-7608/src/index.tsx")
 gitlab_search(project="group/sub/repo", ref="fix/PROJ-7608", query="vehicleCount")
 gitlab_pickaxe(project="group/sub/repo", ref="fix/PROJ-7608", query="vehicleCount")
+gitlab_log(project="group/sub/repo", ref="fix/PROJ-7608", path="src/index.tsx")
+gitlab_get_commit(project="group/sub/repo", rev="8297d0d")
+gitlab_blame(project="group/sub/repo", ref="fix/PROJ-7608", path="src/index.tsx", lines="118-126")
+gitlab_compare(project="group/sub/repo", from="develop", to="fix/PROJ-7608")
+gitlab_diff_file(project="group/sub/repo", from="develop", to="fix/PROJ-7608", path="src/index.tsx")
+gitlab_log(url="https://gitlab.example.com/group/sub/repo/-/commits/fix/PROJ-7608/src/index.tsx")
+gitlab_get_commit(url="https://gitlab.example.com/group/sub/repo/-/commit/8297d0da2215eef6bc04292e2ca19b344a7bd57f")
+gitlab_blame(url="https://gitlab.example.com/group/sub/repo/-/blame/fix/PROJ-7608/src/index.tsx#L118-126")
 gitlab_remove_repo(project="group/sub/repo")
 ```
 
@@ -116,8 +126,10 @@ Start with `list_refs` to find the branch and `resolve_ref` to confirm it, use
 `list_tree` to see what is in it, then `get_file` to read a specific file. An
 agent can do all four against a repository it has never cloned. `search` answers
 "where is this used" when you do not know the file, and `pickaxe` answers "when
-did it appear". `list_repos`, `add_repo`, `remove_repo` and `sync_repo` are the
-exception: they are about the server's own state rather than about reading
+did it appear". `log` says what happened on a branch, `get_commit` what one commit
+touched, `blame` who last touched each line, and `compare`/`diff_file` what
+changed between two refs. `list_repos`, `add_repo`, `remove_repo` and `sync_repo`
+are the exception: they are about the server's own state rather than about reading
 content.
 
 Results are wrapped so provenance is always visible:
@@ -177,9 +189,10 @@ passed on as pasted:
 gitlab_get_file(url="https://gitlab.example.com/group/sub/repo/-/blob/fix/PROJ-7608/src/index.tsx#L118-126")
 ```
 
-`/-/blob/` and `/-/raw/` name a file, `/-/tree/` a directory, and `/-/blame/` a
-file (blame itself is phase 3). A `#L12` or `#L12-20` anchor becomes the read
-range — 1-based and inclusive — and the result says which lines came back:
+`/-/blob/` and `/-/raw/` name a file, `/-/tree/` a directory, `/-/blame/` a file,
+`/-/commit/<sha>` a commit, and `/-/commits/<ref>[/<path>]` a history. A `#L12` or
+`#L12-20` anchor becomes the read range — 1-based and inclusive — and the result
+says which lines came back:
 
 ```
 <file project="group/sub/repo" ref="fix/PROJ-7608" commit="abc123…" path="src/index.tsx" lines="118-126" file_lines="373" synced_at="…">
@@ -196,11 +209,24 @@ link never becomes a confident guess.
 
 The link's host must be the configured `GITLAB_HOST`; a link to another instance
 is refused with both hosts named rather than read from a same-named project here.
-Commit, history and merge-request links are refused by name, because they do not
-point at a file or a directory. `parse_gitlab_url(url)` reports what a link names —
-project, ref, path and line range, plus the commit once the ref is resolved —
-without reading the file; `resolve=false` splits it offline, touching neither the
-registry nor the network, for a link whose project should not be touched.
+
+Each link goes to the tool that reads it: `get_file` takes a blob, raw or blame
+link, `list_tree` a tree link, `get_commit` a `/-/commit/` link, `log` a
+`/-/commits/` link, and `blame` a blob, raw or blame link — whose `#L118-126`
+anchor narrows the blame the way it narrows a read. A link handed to the wrong
+tool is refused by name and says which tool wants it, rather than being read as
+something the link did not point at:
+
+```
+"https://…/-/commit/8297d0da" is a commit link; use get_commit for it.
+```
+
+Merge-request, issue and other links stay refused by name, because they do not
+name a version-control object. `parse_gitlab_url(url)` reports what a link names —
+project, target, ref, path and line range, plus the commit once the ref is
+resolved — without reading anything; `resolve=false` splits it offline, touching
+neither the registry nor the network, for a link whose project should not be
+touched.
 
 ## Search
 
@@ -286,6 +312,91 @@ It walks the history of the ref and is therefore slower than `search` (seconds
 rather than milliseconds on a large repository). Like `search` it matches
 literally and case-insensitively; `case_sensitive=true` follows the text exactly,
 and `limit` (default 20) caps the walk.
+
+## History and diffs
+
+`log` walks a ref's history — `git log`, no checkout — newest first, one row of
+`commit`, `date`, `author` and `subject`, with `(merge)` on a merge commit:
+
+```
+<log project="group/sub/repo" ref="fix/PROJ-7608" commit="8297d0da2215…" path="src/index.tsx" count="2" synced_at="…">
+8297d0da2215	2026-10-15	Author	PROJ-7608: inconsistent productive vehicle count
+1a0a34cc11ed	2026-10-14	Ana	Merge branch 'develop' into fix/PROJ-7608	(merge)
+</log>
+```
+
+`path` is a git pathspec, so globs work — and history stops at a rename, because
+git's `--follow` accepts only one path. `limit` (default 20) bounds the answer, and
+a capped answer says so rather than inventing a total.
+
+`get_commit` reads one commit — sha, parents, author and committer with dates, and
+the full message — then the files it changed, with git's status letter and their
+line counts:
+
+```
+<commit project="group/sub/repo" rev="8297d0d" sha="8297d0da2215eef6bc04292e2ca19b344a7bd57f" parents="1a0a34cc11ed…" author="Author <…>" authored_at="…" committer="Author <…>" committed_at="…" files="1" additions="32" deletions="11" synced_at="…">
+PROJ-7608: inconsistent productive vehicle count
+
+M	src/index.tsx	+32 -11
+</commit>
+```
+
+`patch=true` appends the unified diff, capped by `max_bytes`. A merge commit
+reports `merge="true"` and no file list, because git shows no diff for a merge by
+default — the result names the two commits to `compare` instead, so an empty list
+does not read as "changed nothing".
+
+`blame` shows who last touched each line of a file at a ref, grouped into runs from
+the same commit:
+
+```
+<blame project="group/sub/repo" ref="fix/PROJ-7608" commit="8297d0da2215…" path="src/index.tsx" lines="118-126" file_lines="373" groups="2" count="9" max_lines="500" synced_at="…">
+7635450e8668	A. Author	2026-04-23	118-121
+  118: …
+8297d0da2215	Author	2026-10-15	122-126
+  122: …
+</blame>
+```
+
+`lines` narrows it to a range (`"118"` or `"118-126"`), and a range past the end is
+clamped and reported rather than treated as an error; `max_lines` (default 500)
+caps how many lines come back. A binary file is refused, because git blames one but
+its lines carry NUL bytes.
+
+`compare` summarises what changed on `to` since it split from `from` — `git diff
+<merge-base> <to>` — one row per file, with the merge base printed so which diff
+ran is never hidden:
+
+```
+<compare project="group/sub/repo" from="develop" to="fix/PROJ-7608" from_commit="…" to_commit="…" merge_base="1a0a34cc11ed…" files="1" total_files="1" additions="32" deletions="11" max_files="100" synced_at="…">
+M	src/index.tsx	+32 -11
+</compare>
+```
+
+`merge_base=false` asks for the raw two-dot diff instead, and when the two refs
+share no history the two-dot diff runs with `merge_base="none"` and a note saying
+so. A branch diff is unbounded, so this never returns a patch: the file list is
+capped by `max_files` (default 100) and a capped answer says so, while the totals
+still cover every file. `path` is a git pathspec, and it narrows rename detection
+with it — a renamed file can then appear as a delete and an add.
+
+`diff_file` is one file's patch, under a byte cap and a context width:
+
+```
+<diff project="group/sub/repo" path="src/index.tsx" from="1a0a34cc11ed" to="fix/PROJ-7608" from_commit="…" to_commit="…" context="3" bytes="2710" synced_at="…">
+--- a/src/index.tsx
++++ b/src/index.tsx
+…
+</diff>
+```
+
+The two refs are a raw two-dot diff: pass the `merge_base` `compare` printed as
+`from` for the branch's own view of the file. An unchanged file yields no diff and
+a path absent from both refs is reported as not found, so "no changes" never
+stands in for "no such file"; a binary file is refused, because git has only a
+`Binary files … differ` line for it, which is not a patch. The patch is capped by
+`max_bytes` (default 200 KB) and says when it was cut, and `context` (default 3,
+0–10) sets the lines shown around each hunk.
 
 ## Repositories and policy
 
@@ -434,7 +545,8 @@ needed to find out what happened.
 | `search` finds nothing, although you can see the text | Matching is literal and one argument: `foo\|bar` means that text, not `foo` or `bar` — pass `regex=true` for alternation. A `path` that matches nothing also returns no matches rather than an error, and a plain pathspec's `**` needs a directory level (`src/**/*.tsx` misses `src/index.tsx`; use `:(glob)src/**/*.tsx`). |
 | `pickaxe` lists no commits for text you can see | It reports commits whose diff *changed how many times* the text appears (`git log -S`), so text unchanged since the root commit, or brought in by a merge git does not diff, has no commit to list. Matching is literal and case-insensitive; `case_sensitive=true` follows the case exactly. |
 | A link is refused: `URL host "…" does not match GITLAB_HOST ("…")` | The link belongs to another GitLab instance. Use a link from the instance `GITLAB_HOST` names; the server will not read a same-named project from elsewhere. |
-| A link is refused: *is a commit link* or *is a merge request link* | Those links name no file or directory. Take the ref (or commit) and the path from the page and call `get_file` with them; `resolve_ref` and `list_tree` help find both. |
+| A link is refused: *is a file link; use get_file for it* (or *directory*, *commit*, *history*) | The link went to a tool that does not read it. Each kind has one reader: blob/raw/blame → `get_file` (or `blame`), tree → `list_tree`, `/-/commit/` → `get_commit`, `/-/commits/` → `log`. `parse_gitlab_url` says what a link names if it is unclear. |
+| A link is refused: *is a merge request link* | Merge requests, issues and other non-code links name no version-control object, so they are refused by name. Take the ref and path from the page and call the tool directly. |
 | A `context` call is refused | It needs `output="matches"`; `files` and `count` have no matched line to put context around. |
 | `list_repos` prints `clone_strategy=blobless(unsupported)` | A `repos.json` entry asks for a clone strategy this server does not implement, so every read of that project fails with the value named. Set `"cloneStrategy": "full"` if the data on disk is a full clone, or `remove_repo` it with `deleteMirror=true` and use the project again, which clones it in full. |
 
@@ -490,6 +602,7 @@ test/
   refs.test.ts          ref listing, resolution, close matches
   tree.test.ts          directory listings, the ls-tree parser, rendering
   search.test.ts        grep and log -S: their parsers, rendering, fixture reads
+  history.test.ts       log, get_commit, blame, compare and diff_file, end to end
   url.test.ts           GitLab URL shapes, ref resolution, line anchors
   repos.test.ts         rendering the registry listing
   git.test.ts           the git wrapper
@@ -518,4 +631,7 @@ tsconfig.build.json     emit: src/ only → dist/
   `get_file`/`list_tree` with `#L12-20` ranges, `search` output modes
   (`files`, `count`) and match context, the `cloneStrategy` refusal, and the
   truncation and stale-visibility review.
-- **Phase 3 (next):** `compare`, `diff_file`, `log`, `get_commit`, `blame`.
+- **Phase 3 (done):** `log`, `get_commit`, `blame`, `compare` and `diff_file` —
+  history, a commit's own changes, per-line authorship, and diffs between two refs
+  — plus `/-/commit/`, `/-/commits/` and `/-/blame/` links read by the tools that
+  make them readable.
