@@ -160,3 +160,54 @@ export function publishBranchFromElsewhere(
   runGit(elsewhere, ["push", "-q", "origin", `HEAD:refs/heads/${branch}`]);
   fs.rmSync(elsewhere, { recursive: true, force: true });
 }
+
+/**
+ * Rename `from` to `to` on `branch` (with new contents), commit and publish.
+ *
+ * `git mv` keeps the rename detectable only when the file is big enough to be
+ * recognised, which is why the tests rename an eight-line file rather than a
+ * one-line one.
+ */
+export function renameOnBranch(
+  work: string,
+  branch: string,
+  from: string,
+  to: string,
+  contents: string,
+  message: string,
+): void {
+  runGit(work, ["checkout", "-q", branch]);
+  runGit(work, ["mv", from, to]);
+  writeFile(work, to, contents);
+  runGit(work, ["add", "-A"]);
+  commit(work, message);
+  runGit(work, ["checkout", "-q", "main"]);
+  publish(work);
+}
+
+/**
+ * Create `branch` from main, commit a file on it, then merge it back with
+ * `--no-ff` and publish — so main carries a real merge commit, two parents and
+ * no diff of its own.
+ */
+export function addMergedBranch(
+  work: string,
+  branch: string,
+  relPath: string,
+  contents: string,
+  message: string,
+): void {
+  runGit(work, ["checkout", "-q", "main"]);
+  runGit(work, ["checkout", "-q", "-b", branch]);
+  writeFile(work, relPath, contents);
+  runGit(work, ["add", "-A"]);
+  commit(work, "branch work");
+  runGit(work, ["checkout", "-q", "main"]);
+  execFileSync(
+    GIT,
+    ["-C", work, "-c", "user.email=test@example.com", "-c", "user.name=Test",
+      "merge", "-q", "--no-ff", branch, "-m", message],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  publish(work);
+}

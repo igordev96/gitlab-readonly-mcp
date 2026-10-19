@@ -45,6 +45,22 @@ const REF_MAX_BYTES = 4 * 1024 * 1024;
 const TREE_MAX_BYTES = 8 * 1024 * 1024;
 /** One `git log` row for `pickaxe`: short sha, date, author, subject. */
 const PICKAXE_FORMAT = "%h%x09%ad%x09%an%x09%s";
+/** Default number of commits `log` returns. */
+export const DEFAULT_LOG_LIMIT = 20;
+/** Absolute cap on a `log` answer, so one call cannot walk a whole history. */
+export const HARD_LOG_LIMIT = 200;
+/** Byte cap for history output; the row limits usually bite first. */
+const HISTORY_MAX_BYTES = 5 * 1024 * 1024;
+/** Context lines `get_commit` asks for when it renders a patch. */
+export const DEFAULT_DIFF_CONTEXT = 3;
+/**
+ * One `git log -z` record: full sha, short sha, parents, author, author date,
+ * subject. `0x1f` separates fields and `0x1e` ends the record, because a subject
+ * may contain tabs and a record the byte cap tore must not look complete.
+ */
+const LOG_FORMAT = "%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s%x1e";
+/** One commit's metadata; the raw message is last, so it may hold anything. */
+const COMMIT_FORMAT = "%H%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%cn%x1f%ce%x1f%cI%x1f%B";
 
 /** Thrown when a ref or file path does not exist (as opposed to a hard failure). */
 export class NotFoundError extends Error {
@@ -345,6 +361,102 @@ export interface PickaxeResult {
   truncated: boolean;
   /** True only for the byte cap: `entries` is then what fitted, not what matched. */
   outputTruncated: boolean;
+  syncedAt?: Date;
+  fetched: boolean;
+  /** Set when the freshness check failed and this answer came from the cache. */
+  refreshError?: string;
+}
+
+/** How `log` should be run. */
+export interface LogOptions {
+  /** The ref whose history to walk. Omitted means the source's HEAD. */
+  ref?: string;
+  /** A git pathspec, so globs work. Absent walks the whole branch's history. */
+  path?: string;
+  limit?: number;
+}
+
+/** One commit row from `log`. */
+export interface LogEntry {
+  /** Full sha, so a row can be handed straight to `get_commit`. */
+  commit: string;
+  /** The abbreviated sha shown in the row. */
+  short: string;
+  /** Parent shas; more than one means a merge. */
+  parents: string[];
+  author?: string;
+  /** Author date, ISO 8601 with the author's offset. */
+  date?: string;
+  subject?: string;
+  merge: boolean;
+}
+
+export interface LogResult {
+  project: string;
+  ref: string;
+  commit: string;
+  path?: string;
+  entries: LogEntry[];
+  /** True when `limit` hid older commits, or the byte cap cut the output. */
+  truncated: boolean;
+  /** True only for the byte cap: `entries` is then what fitted, not what exists. */
+  outputTruncated: boolean;
+  syncedAt?: Date;
+  fetched: boolean;
+  /** Set when the freshness check failed and this answer came from the cache. */
+  refreshError?: string;
+}
+
+/** One file changed by a commit, as `get_commit` reports it. */
+export interface CommitFile {
+  /** `A`, `M`, `D`, `R091`, `C100`, … exactly as git reports it. */
+  status: string;
+  /** The path after the change (the new path for a rename). */
+  path: string;
+  /** The previous path, for a rename or a copy. */
+  oldPath?: string;
+  additions?: number;
+  deletions?: number;
+  /** True when git reported no line counts: a binary file. */
+  binary: boolean;
+}
+
+/** How `get_commit` should be run. */
+export interface GetCommitOptions {
+  /** Append the unified diff. Default false: metadata and the file list only. */
+  patch?: boolean;
+  /** Byte cap for the patch, when one is asked for. */
+  maxBytes?: number;
+}
+
+export interface CommitResult {
+  project: string;
+  /** What the caller asked for: a full or abbreviated sha, or a ref name. */
+  rev: string;
+  /** The commit it resolved to. */
+  commit: string;
+  parents: string[];
+  author?: string;
+  authorEmail?: string;
+  authoredAt?: string;
+  committer?: string;
+  committerEmail?: string;
+  committedAt?: string;
+  /** The raw message: subject, a blank line, then the body. */
+  message: string;
+  /** True when the commit has more than one parent. */
+  merge: boolean;
+  /** Empty for a merge: git shows no file list for one by default. */
+  files: CommitFile[];
+  /** Totals over `files`; binary files contribute nothing. */
+  additions: number;
+  deletions: number;
+  /** Present only when `patch` was asked for, and the commit is not a merge. */
+  patch?: string;
+  /** True when the byte cap cut the patch. */
+  patchTruncated: boolean;
+  /** True when the byte cap cut the file list. */
+  filesTruncated: boolean;
   syncedAt?: Date;
   fetched: boolean;
   /** Set when the freshness check failed and this answer came from the cache. */
@@ -711,6 +823,190 @@ export function parsePickaxeEntries(output: string): PickaxeEntry[] {
     });
   }
   return entries;
+}
+
+/**
+ * Parse `git log -z --format=<fields>%x1e`.
+ *
+ * `0x1f` separates fields and `0x1e` ends a record. Only a record that ends
+ * with `0x1e` is accepted, so one the byte cap tore in half is dropped rather
+ * than reported with a shorter subject.
+ */
+export function parseLogEntries(output: string): LogEntry[] {
+  const entries: LogEntry[] = [];
+  // The text after the last terminator is a torn record, never a complete one.
+  for (const raw of output.split("\u001e").slice(0, -1)) {
+    const record = raw.replace(/^\u0000+/, "").replace(/\n$/, "");
+    if (!record) {
+      continue;
+    }
+    const fields = record.split("\u001f");
+    if (fields.length < 6) {
+      continue;
+    }
+    const commit = fields[0] ?? "";
+    if (!commit) {
+      continue;
+    }
+    const parents = (fields[2] ?? "").split(" ").filter(Boolean);
+    entries.push({
+      commit,
+      short: fields[1] || commit.slice(0, 12),
+      parents,
+      author: fields[3] || undefined,
+      date: fields[4] || undefined,
+      subject: fields.slice(5).join("\u001f") || undefined,
+      merge: parents.length > 1,
+    });
+  }
+  return entries;
+}
+
+/** What `git show --format=<COMMIT_FORMAT>` carries about one commit. */
+export interface CommitMetadata {
+  commit: string;
+  parents: string[];
+  author?: string;
+  authorEmail?: string;
+  authoredAt?: string;
+  committer?: string;
+  committerEmail?: string;
+  committedAt?: string;
+  message: string;
+}
+
+/**
+ * Parse the single record `get_commit` asks of `git show`.
+ *
+ * The message is the last field, so a `0x1f` inside it stays message text
+ * rather than becoming a field boundary. One trailing newline is git's record
+ * terminator, not part of the message.
+ */
+export function parseCommitMetadata(output: string): CommitMetadata | undefined {
+  const fields = output.replace(/\n$/, "").split("\u001f");
+  if (fields.length < 9) {
+    return undefined;
+  }
+  const commit = fields[0] ?? "";
+  if (!commit) {
+    return undefined;
+  }
+  return {
+    commit,
+    parents: (fields[1] ?? "").split(" ").filter(Boolean),
+    author: fields[2] || undefined,
+    authorEmail: fields[3] || undefined,
+    authoredAt: fields[4] || undefined,
+    committer: fields[5] || undefined,
+    committerEmail: fields[6] || undefined,
+    committedAt: fields[7] || undefined,
+    message: fields.slice(8).join("\u001f"),
+  };
+}
+
+/** One record from `git diff --name-status -z`. */
+export interface NameStatusEntry {
+  status: string;
+  path: string;
+  oldPath?: string;
+}
+
+/**
+ * Parse `git diff --name-status -z -M`.
+ *
+ * A rename or copy carries two paths (`R091\0old\0new\0`); anything else one
+ * (`M\0path\0`). A record the byte cap tore is dropped: with no record width to
+ * guess from, an incomplete pair is not a row.
+ */
+export function parseNameStatus(output: string): NameStatusEntry[] {
+  const tokens = output.split("\u0000");
+  const entries: NameStatusEntry[] = [];
+
+  for (let i = 0; i < tokens.length; i++) {
+    const status = tokens[i] ?? "";
+    if (!status) {
+      continue;
+    }
+    const paths = status[0] === "R" || status[0] === "C" ? 2 : 1;
+    if (i + paths >= tokens.length) {
+      break;
+    }
+    if (paths === 2) {
+      const oldPath = tokens[i + 1] ?? "";
+      const path = tokens[i + 2] ?? "";
+      i += 2;
+      if (oldPath && path) {
+        entries.push({ status, path, oldPath });
+      }
+      continue;
+    }
+    const path = tokens[i + 1] ?? "";
+    i += 1;
+    if (path) {
+      entries.push({ status, path });
+    }
+  }
+  return entries;
+}
+
+/** One record from `git diff --numstat -z`. */
+export interface NumstatEntry {
+  path: string;
+  oldPath?: string;
+  additions?: number;
+  deletions?: number;
+  binary: boolean;
+}
+
+/**
+ * Parse `git diff --numstat -z -M`.
+ *
+ * A normal record is one NUL-delimited token, `add\tdel\tpath`. A rename is
+ * `add\tdel\t` with an **empty** path, followed by the two names as separate
+ * tokens — measured with git 2.53, and the reason this cannot just split on
+ * tabs. A `-` where a count belongs means the file is binary.
+ */
+export function parseNumstat(output: string): NumstatEntry[] {
+  const tokens = output.split("\u0000");
+  const entries: NumstatEntry[] = [];
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i] ?? "";
+    if (!token) {
+      continue;
+    }
+    const fields = token.split("\t");
+    if (fields.length !== 3) {
+      continue;
+    }
+    const [add = "", del = "", pathField = ""] = fields;
+    const binary = add === "-" || del === "-";
+    const additions = binary ? undefined : Number(add);
+    const deletions = binary ? undefined : Number(del);
+    const counts = {
+      binary,
+      additions: additions !== undefined && Number.isFinite(additions) ? additions : undefined,
+      deletions: deletions !== undefined && Number.isFinite(deletions) ? deletions : undefined,
+    };
+
+    if (pathField === "") {
+      const oldPath = tokens[i + 1] ?? "";
+      const path = tokens[i + 2] ?? "";
+      i += 2;
+      if (!oldPath || !path) {
+        break; // a rename the byte cap cut in half
+      }
+      entries.push({ ...counts, path, oldPath });
+      continue;
+    }
+    entries.push({ ...counts, path: pathField });
+  }
+  return entries;
+}
+
+/** Key that pairs a name-status row with its numstat row, renames included. */
+function fileKey(entry: { path: string; oldPath?: string }): string {
+  return entry.oldPath === undefined ? entry.path : `${entry.oldPath}\u0000${entry.path}`;
 }
 
 /**
@@ -1688,6 +1984,209 @@ export class RepoStore {
       entries: entries.length > limit ? entries.slice(0, limit) : entries,
       truncated: entries.length > limit || found.truncated,
       outputTruncated: found.truncated,
+      syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
+      fetched,
+      refreshError,
+    };
+  }
+
+  /**
+   * List commits, newest first: `git log`.
+   *
+   * `limit + 1` rows are asked for, so "there are more" is a fact rather than a
+   * guess — a `git log` has no cheap total to report, and inventing one is not
+   * an option. `path` is a git pathspec, so history stops at a rename unless the
+   * caller follows the new name; `--follow` is deliberately not offered.
+   */
+  async log(project: string, options: LogOptions = {}): Promise<LogResult> {
+    const cleanProject = validateProject(project);
+    const cleanPath = options.path === undefined ? undefined : validateRepoPath(options.path);
+
+    const source = await this.resolveSource(cleanProject);
+    const target = await this.targetRef(source, options.ref);
+    const { commit, fetched, refreshError, skipped } = await this.resolveWithFreshness(
+      cleanProject,
+      target.resolve,
+      source,
+    );
+    if (!commit) {
+      throw new NotFoundError(
+        await this.notFoundRefMessage(cleanProject, target.display, {
+          refreshError,
+          skipped,
+          sourceKind: source.kind,
+        }),
+      );
+    }
+
+    const limit = Math.min(Math.max(options.limit ?? DEFAULT_LOG_LIMIT, 1), HARD_LOG_LIMIT);
+    const args = [
+      "log",
+      "-z",
+      `--format=${LOG_FORMAT}`,
+      "--no-color",
+      `--max-count=${limit + 1}`,
+      commit,
+    ];
+    if (cleanPath) {
+      args.push("--", cleanPath);
+    }
+
+    const found = await this.git.run(args, { gitDir: source.gitDir, maxBytes: HISTORY_MAX_BYTES });
+    if (found.code !== 0) {
+      throw new GitError("Failed to list history.", found.code, this.redact(found.stderr).trim());
+    }
+
+    const entries = parseLogEntries(found.stdout);
+    const syncMs = await this.sources.lastSyncAt(source.gitDir);
+    return {
+      project: cleanProject,
+      ref: target.display,
+      commit,
+      path: cleanPath,
+      entries: entries.length > limit ? entries.slice(0, limit) : entries,
+      truncated: entries.length > limit || found.truncated,
+      outputTruncated: found.truncated,
+      syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
+      fetched,
+      refreshError,
+    };
+  }
+
+  /**
+   * One commit: metadata, its changed files, and optionally its patch.
+   *
+   * The file list costs two passes — `--name-status` and `--numstat` — because
+   * the two flags do not combine (the last one wins; measured with git 2.53).
+   * A merge reports neither: git shows no diff for a merge by default, and its
+   * `--numstat` is a combined diff whose counts belong to no single parent.
+   */
+  async getCommit(
+    project: string,
+    rev: string,
+    options: GetCommitOptions = {},
+  ): Promise<CommitResult> {
+    const cleanProject = validateProject(project);
+    const cleanRev = validateRef(rev);
+
+    const source = await this.resolveSource(cleanProject);
+    const { commit, fetched, refreshError, skipped } = await this.resolveWithFreshness(
+      cleanProject,
+      cleanRev,
+      source,
+    );
+    if (!commit) {
+      throw new NotFoundError(
+        await this.notFoundRefMessage(cleanProject, cleanRev, {
+          refreshError,
+          skipped,
+          sourceKind: source.kind,
+        }),
+      );
+    }
+
+    const meta = await this.git.run(
+      ["show", "--no-patch", `--format=${COMMIT_FORMAT}`, commit],
+      { gitDir: source.gitDir, maxBytes: HISTORY_MAX_BYTES },
+    );
+    if (meta.code !== 0) {
+      throw new GitError(
+        `Failed to read commit ${commit}.`,
+        meta.code,
+        this.redact(meta.stderr).trim(),
+      );
+    }
+    const parsed = parseCommitMetadata(meta.stdout);
+    if (!parsed) {
+      throw new Error(`git returned metadata for ${commit.slice(0, 12)} that could not be read.`);
+    }
+
+    const merge = parsed.parents.length > 1;
+    let files: CommitFile[] = [];
+    let additions = 0;
+    let deletions = 0;
+    let filesTruncated = false;
+
+    if (!merge) {
+      const statusRun = await this.git.run(
+        ["show", "--format=", "--name-status", "-z", "-M", commit],
+        { gitDir: source.gitDir, maxBytes: HISTORY_MAX_BYTES },
+      );
+      const countRun = await this.git.run(
+        ["show", "--format=", "--numstat", "-z", "-M", commit],
+        { gitDir: source.gitDir, maxBytes: HISTORY_MAX_BYTES },
+      );
+      for (const run of [statusRun, countRun]) {
+        if (run.code !== 0) {
+          throw new GitError(
+            `Failed to list the files changed by ${commit.slice(0, 12)}.`,
+            run.code,
+            this.redact(run.stderr).trim(),
+          );
+        }
+      }
+
+      const counts = new Map(
+        parseNumstat(countRun.stdout).map((entry) => [fileKey(entry), entry]),
+      );
+      files = parseNameStatus(statusRun.stdout).map((entry) => {
+        const count = counts.get(fileKey(entry));
+        return {
+          status: entry.status,
+          path: entry.path,
+          oldPath: entry.oldPath,
+          additions: count?.additions,
+          deletions: count?.deletions,
+          binary: count?.binary ?? false,
+        };
+      });
+      additions = files.reduce((sum, file) => sum + (file.additions ?? 0), 0);
+      deletions = files.reduce((sum, file) => sum + (file.deletions ?? 0), 0);
+      filesTruncated = statusRun.truncated || countRun.truncated;
+    }
+
+    let patch: string | undefined;
+    let patchTruncated = false;
+    if (options.patch && !merge) {
+      const maxBytes = Math.min(
+        options.maxBytes ?? DEFAULT_FILE_MAX_BYTES,
+        HARD_FILE_MAX_BYTES,
+      );
+      const shown = await this.git.run(
+        ["show", "--format=", "--patch", "-M", `--unified=${DEFAULT_DIFF_CONTEXT}`, commit],
+        { gitDir: source.gitDir, maxBytes },
+      );
+      if (shown.code !== 0) {
+        throw new GitError(
+          `Failed to read the patch of ${commit.slice(0, 12)}.`,
+          shown.code,
+          this.redact(shown.stderr).trim(),
+        );
+      }
+      patch = shown.stdout;
+      patchTruncated = shown.truncated;
+    }
+
+    const syncMs = await this.sources.lastSyncAt(source.gitDir);
+    return {
+      project: cleanProject,
+      rev: cleanRev,
+      commit: parsed.commit,
+      parents: parsed.parents,
+      author: parsed.author,
+      authorEmail: parsed.authorEmail,
+      authoredAt: parsed.authoredAt,
+      committer: parsed.committer,
+      committerEmail: parsed.committerEmail,
+      committedAt: parsed.committedAt,
+      message: parsed.message,
+      merge,
+      files,
+      additions,
+      deletions,
+      patch,
+      patchTruncated,
+      filesTruncated,
       syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
       fetched,
       refreshError,

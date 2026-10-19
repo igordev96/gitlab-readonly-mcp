@@ -297,9 +297,9 @@ Tool names are exposed by OpenCode as `gitlab_<tool>`.
   (Named `ref` rather than the original `name`, to match `get_file`.)
 
 **Diff & history** — phase 3, designed below and split into 3a–3d in §7.
-- `log(project, ref?, path?, limit?, max_bytes?, url?)` — `git log`, newest
-  first, one row per commit (short sha, ISO date, author, subject); a merge
-  commit is marked. `ref` defaults to HEAD and is named in the header.
+- `log(project, ref?, path?, limit?, url?)` — `git log`, newest first, one row
+  per commit (short sha, ISO date, author, subject); a merge commit is marked.
+  `ref` defaults to HEAD and is named in the header.
 - `get_commit(project, rev, patch?, max_bytes?, url?)` — `git show`: sha,
   parents, author/committer with dates and the full message, then the changed
   files with status and ± counts; `patch: true` appends the unified diff. A merge
@@ -452,7 +452,9 @@ mechanics measured with git 2.53 on 2026-10-19):
   Measured: `git diff --numstat --name-status` prints only the name-status section
   (the last flag wins), so the file list costs two passes over the same diff —
   `--name-status -z -M` for status and rename pairs, `--numstat -z -M` for counts,
-  zipped by path. `--numstat -z` has a trap of its own: a rename record is
+  zipped by path. The commit header is suppressed with an empty `--format=`, not
+  with `--no-patch`: the latter *is* `-s`, which git refuses to combine with
+  `--name-status`. `--numstat -z` has a trap of its own: a rename record is
   `add\tdel\t\0old\0new\0`, with an **empty** path field and the two names after
   it, so a parser that assumes three fields reads the old name as the path.
 - **Renames are always asked for** (`-M`), so detection does not depend on the

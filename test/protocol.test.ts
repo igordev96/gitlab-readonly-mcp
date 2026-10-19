@@ -128,6 +128,33 @@ describe("MCP protocol", () => {
     assert.match(textOf(history), /branch change/);
   });
 
+  it("exposes log and get_commit, and reads history", async () => {
+    const { tools } = await client.listTools();
+    const names = tools.map((tool) => tool.name);
+    for (const expected of ["log", "get_commit"]) {
+      assert.ok(names.includes(expected), `${expected} is missing; saw ${names.join(", ")}`);
+    }
+
+    const history = await client.callTool({
+      name: "log",
+      arguments: { project: "demo", ref: "fix/TEST-1" },
+    });
+    assert.equal(history.isError, undefined);
+    assert.match(
+      textOf(history),
+      /<log project="demo" ref="fix\/TEST-1" commit="[0-9a-f]{40}" count="2"/,
+    );
+    assert.match(textOf(history), /branch change/);
+
+    const commit = await client.callTool({
+      name: "get_commit",
+      arguments: { project: "demo", rev: "fix/TEST-1" },
+    });
+    assert.equal(commit.isError, undefined);
+    assert.match(textOf(commit), /<commit project="demo" rev="fix\/TEST-1" sha="[0-9a-f]{40}"/);
+    assert.match(textOf(commit), /\nM\tsrc\/index\.tsx\t\+1 -1\n/);
+  });
+
   it("exposes parse_gitlab_url, and reads through a pasted link", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name);
