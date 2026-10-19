@@ -112,6 +112,52 @@ describe("MCP protocol", () => {
     assert.match(textOf(history), /branch change/);
   });
 
+  it("exposes parse_gitlab_url, and reads through a pasted link", async () => {
+    const { tools } = await client.listTools();
+    const names = tools.map((tool) => tool.name);
+    for (const expected of ["parse_gitlab_url", "get_file", "list_tree", "search", "pickaxe"]) {
+      assert.ok(names.includes(expected), `${expected} is missing; saw ${names.join(", ")}`);
+    }
+
+    // The fixture's GITLAB_HOST is a file URL, whose host is empty, so a link with
+    // an empty host is the one that can match it here — the host check itself is
+    // what makes the `https://elsewhere…` case below fail.
+    const link = "file:///demo/-/blob/fix/TEST-1/src/index.tsx#L1-1";
+
+    const parsed = await client.callTool({ name: "parse_gitlab_url", arguments: { url: link } });
+    assert.equal(parsed.isError, undefined);
+    assert.match(textOf(parsed), /project="demo"/);
+    assert.match(textOf(parsed), /ref="fix\/TEST-1"/);
+    assert.match(textOf(parsed), /path="src\/index\.tsx"/);
+    assert.match(textOf(parsed), /ref_confirmed="true"/);
+
+    const read = await client.callTool({ name: "get_file", arguments: { url: link } });
+    assert.equal(read.isError, undefined);
+    assert.match(textOf(read), /lines="1-1"/);
+    assert.match(textOf(read), /1: export const hello = 'fix\/TEST-1';/);
+
+    const tree = await client.callTool({
+      name: "list_tree",
+      arguments: { url: "file:///demo/-/tree/main/src" },
+    });
+    assert.equal(tree.isError, undefined);
+    assert.match(textOf(tree), /src\/index\.tsx/);
+
+    const foreign = await client.callTool({
+      name: "get_file",
+      arguments: { url: "https://elsewhere.example.com/demo/-/blob/main/src/index.tsx" },
+    });
+    assert.equal(foreign.isError, true);
+    assert.match(textOf(foreign), /does not match GITLAB_HOST/);
+
+    const refused = await client.callTool({
+      name: "get_file",
+      arguments: { url: "file:///demo/-/merge_requests/3" },
+    });
+    assert.equal(refused.isError, true);
+    assert.match(textOf(refused), /is a merge request link/);
+  });
+
   it("reports a project once it has been used, and syncs it on demand", async () => {
     await client.callTool({
       name: "get_file",

@@ -513,10 +513,11 @@ src/
   repoStore.ts   # project -> source resolution, refs, trees, freshness policy
   sources.ts     # mirror paths, clone, fetch, per-source lock, the sync clock
   registry.ts    # repos.json: per-project source and freshness policy
-  url.ts         # GitLab web URL -> {project, kind, ref, path, lines}   (4b)
+  url.ts         # GitLab web URL -> {project, target, rest, lines}     (4b)
   tools/
     result.ts      # shared tool result shapes and error rendering
-    files.ts       # get_file, list_tree                            ✅ Phase 2b-2
+    files.ts       # get_file, list_tree (+ `url`)                  ✅ Phase 2b-2/4b
+    url.ts         # parse_gitlab_url                              (4b)
     refs.ts        # list_refs, resolve_ref                        ✅ Phase 2b-1
     repos.ts       # list_repos, sync_repo, add_repo, remove_repo   ✅ Phase 2c-1/2c-2
     history.ts                                                    (Phase 3)

@@ -4,9 +4,12 @@ import { Git, GitError, type GitRunResult } from "./git.js";
 import { explainGitError } from "./gitDiagnostics.js";
 import { RepoRegistry, type RepoEntry, type RepoSource } from "./registry.js";
 import { SourceManager, type GitSource } from "./sources.js";
+import { parseGitlabUrl, resolveUrlParts, type LineRange } from "./url.js";
 
 const PROJECT_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 export const DEFAULT_FILE_MAX_BYTES = 200_000;
+/** Absolute cap on a file read, applied when a line range needs the whole file. */
+export const HARD_FILE_MAX_BYTES = 20_000_000;
 /** Default cap on the number of refs or entries a listing returns. */
 export const DEFAULT_MAX_ENTRIES = 200;
 /** Absolute cap on a listing, so one call can never dump an unbounded result. */
@@ -52,11 +55,59 @@ export interface FileReadResult {
   content: string;
   truncated: boolean;
   binary: boolean;
+  /** Present when a line range was asked for: what was sliced out of the file. */
+  lines?: ReadLineRange;
   /** When the source backing this read was last synchronised, if known. */
   syncedAt?: Date;
   /** True when this read triggered a fetch. */
   fetched: boolean;
   /** Set when the freshness check failed and this answer came from the cache. */
+  refreshError?: string;
+}
+
+/** What a requested line range actually yielded. */
+export interface ReadLineRange {
+  /** The range that was asked for, 1-based and inclusive. */
+  from: number;
+  to: number;
+  /** First line present in the file within the range, or `undefined` when none is. */
+  availableFrom?: number;
+  /** Last line present in the file within the range, or `undefined` when none is. */
+  availableTo?: number;
+  /** Lines in the file, as far as this read went (exact unless `truncated`). */
+  fileLines: number;
+}
+
+/** Options for a single file read. */
+export interface FileReadOptions {
+  /** Return only this 1-based, inclusive line range. */
+  lines?: LineRange;
+}
+
+/** A GitLab web URL, parsed and — unless asked not to — resolved. */
+export interface ResolvedUrl {
+  /** The link as given. */
+  url: string;
+  host: string;
+  project: string;
+  target: "file" | "directory";
+  /** The ref, split out of the URL using the project's own refs. */
+  ref: string;
+  /** File or directory path; empty for a `/-/tree/<ref>` root link. */
+  path: string;
+  /** True when `ref` is a ref this project has, rather than the first segment. */
+  refConfirmed: boolean;
+  refKind?: "branch" | "tag";
+  /** A `#L12-20` anchor, when the link carried one. */
+  lines?: LineRange;
+  /** Set when the ref resolved to a commit. */
+  commit?: string;
+  /** Where the project is read from, when it was resolved. */
+  source?: RepoSource;
+  syncedAt?: Date;
+  /** True when resolving triggered a fetch. */
+  fetched?: boolean;
+  /** Set when the freshness check failed and the refs came from the cache. */
   refreshError?: string;
 }
 
@@ -362,6 +413,38 @@ export function validateQuery(query: string): string {
     throw new Error("query contains illegal characters.");
   }
   return query;
+}
+
+/**
+ * Cut a 1-based, inclusive line range out of a file's text.
+ *
+ * Git hands back the blob verbatim, so a range is a slice of that text — but the
+ * *line numbers* are the point: the caller asked because a link pointed at them.
+ * A range running past the end is clamped rather than refused, and the caller is
+ * told how many lines the file actually has. CRLF endings survive, because the
+ * text is split on `\n` and rejoined the same way, leaving each `\r` with its line.
+ */
+export function sliceLines(
+  text: string,
+  range: LineRange,
+): { text: string; availableFrom?: number; availableTo?: number; fileLines: number } {
+  const lines = text.split("\n");
+  // A trailing newline ends the last line; it does not start an empty one.
+  if (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  const fileLines = lines.length;
+  const from = Math.max(1, range.from);
+  const to = Math.min(range.to, fileLines);
+  if (from > to) {
+    return { text: "", fileLines };
+  }
+  return {
+    text: lines.slice(from - 1, to).join("\n"),
+    availableFrom: from,
+    availableTo: to,
+    fileLines,
+  };
 }
 
 /**
@@ -1017,6 +1100,7 @@ export class RepoStore {
     ref: string,
     filePath: string,
     maxBytes: number = DEFAULT_FILE_MAX_BYTES,
+    options: FileReadOptions = {},
   ): Promise<FileReadResult> {
     const cleanProject = validateProject(project);
     const cleanRef = validateRef(ref);
@@ -1036,11 +1120,16 @@ export class RepoStore {
       );
     }
 
+    // A line range has to be cut out of the *whole* file, and the caller's byte cap
+    // would often cut the range away before it arrived — a 200 KB cap cannot show
+    // line 9000 of a 4 MB file. So a ranged read goes to the hard cap instead, and
+    // reports it when even that was not enough for the range to be complete.
+    const limit = options.lines ? HARD_FILE_MAX_BYTES : maxBytes;
     // Resolve by SHA so the path can never be mistaken for a ref, and so the
     // returned provenance is unambiguous.
     const shown = await this.git.run(["show", `${commit}:${cleanPath}`], {
       gitDir: source.gitDir,
-      maxBytes,
+      maxBytes: limit,
     });
     if (shown.code !== 0) {
       throw new NotFoundError(
@@ -1048,18 +1137,79 @@ export class RepoStore {
       );
     }
 
+    const binary = shown.stdout.includes("\u0000");
+    const sliced =
+      options.lines && !binary ? sliceLines(shown.stdout, options.lines) : undefined;
     const syncMs = await this.sources.lastSyncAt(source.gitDir);
     return {
       project: cleanProject,
       ref: cleanRef,
       commit,
       path: cleanPath,
-      content: shown.stdout,
+      content: sliced ? sliced.text : shown.stdout,
       truncated: shown.truncated,
-      binary: shown.stdout.includes("\u0000"),
+      binary,
+      lines: options.lines
+        ? {
+            from: options.lines.from,
+            to: options.lines.to,
+            availableFrom: sliced?.availableFrom,
+            availableTo: sliced?.availableTo,
+            fileLines: sliced?.fileLines ?? 0,
+          }
+        : undefined,
       syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
       fetched,
       refreshError,
+    };
+  }
+
+  /**
+   * Parse a GitLab web URL, and — unless told not to — resolve the ref inside it.
+   *
+   * Resolving is the default because the caller has the link *and* wants what it
+   * points at; `resolve: false` is the offline inspection mode, which touches
+   * neither the registry nor the network. A ref that cannot be resolved is not an
+   * error here: the result says `refConfirmed: false` or leaves `commit` unset, and
+   * the reader that follows fails with the usual close-match suggestions, which
+   * help more than a parse-level complaint would.
+   */
+  async resolveUrl(url: string, options: { resolve?: boolean } = {}): Promise<ResolvedUrl> {
+    const parsed = parseGitlabUrl(url, this.config.host);
+    const cleanProject = validateProject(parsed.project);
+    const base = {
+      url,
+      host: parsed.host,
+      project: cleanProject,
+      target: parsed.target,
+      lines: parsed.lines,
+    };
+
+    if (options.resolve === false) {
+      // Nothing to match against, so the ref is the first segment: a guess, and
+      // labelled as one.
+      const parts = resolveUrlParts(parsed.rest, [], parsed.refTypeHint);
+      return { ...base, ref: parts.ref, path: parts.path, refConfirmed: false };
+    }
+
+    const source = await this.resolveSource(cleanProject);
+    await this.refresh(cleanProject, source, "ttl");
+    const refs = await this.rawRefs(source, patternsFor("all", source));
+    const parts = resolveUrlParts(parsed.rest, refs, parsed.refTypeHint);
+    const resolved = await this.resolveWithFreshness(cleanProject, parts.ref, source);
+    const syncMs = await this.sources.lastSyncAt(source.gitDir);
+
+    return {
+      ...base,
+      ref: parts.ref,
+      path: parts.path,
+      refConfirmed: parts.confirmed,
+      refKind: parts.refKind,
+      commit: resolved.commit,
+      source: source.kind,
+      syncedAt: syncMs === undefined ? undefined : new Date(syncMs),
+      fetched: resolved.fetched,
+      refreshError: resolved.refreshError,
     };
   }
 
