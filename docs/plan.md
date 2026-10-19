@@ -8,12 +8,12 @@
 > runbook — lives in [`history.md`](history.md). Keep the two apart: this file
 > should not grow as phases land.
 
-Status: phases 0, 1, 2a, 2b, 2c-1, 2c-2 and 4a are released; 4b is implemented and
-verified live (2026-10-19) and awaits its release. The newest tag is `v0.8.0`
-(search and pickaxe). Eleven tools are implemented: the four reads `get_file`,
-`list_tree`, `list_refs` and `resolve_ref` — exercised against the real GitLab on
-the success path and on a deliberately broken token — plus `search`, `pickaxe`,
-`parse_gitlab_url`, `list_repos`, `add_repo`, `remove_repo` and `sync_repo`.
+Status: phases 0, 1, 2a, 2b, 2c-1, 2c-2, 4a and 4b are released; the newest tag
+is `v0.9.0` (URLs, search modes and context). Eleven tools are implemented: the
+four reads `get_file`, `list_tree`, `list_refs` and `resolve_ref` — exercised
+against the real GitLab on the success path and on a deliberately broken token —
+plus `search`, `pickaxe`, `parse_gitlab_url`, `list_repos`, `add_repo`,
+`remove_repo` and `sync_repo`.
 `get_file` and `list_tree` also accept a GitLab web URL, so a link can be read as
 pasted, with its `#L12-20` range, instead of being decoded by hand. A project registers itself the first time it is used, or
 explicitly with `add_repo`, and its registry entry decides where it is read from: a
@@ -500,10 +500,9 @@ found, and a code change only where a check fails.
 | 4a | Search: `search` (`git grep`) and `pickaxe` (`git log -S`) | "Where is this used on `fix/PROJ-7608`, and when did it appear?" answered without a clone |
 | 4b | Polish: GitLab URLs (`parse_gitlab_url`, `url` on `get_file`/`list_tree`, line anchors), `search` output modes and match context, the `cloneStrategy` refusal, truncation and stale-visibility review | A pasted GitLab blob link reads the file — and the line range it names — with no hand decoding; a broad search answers "how many, in which files" without parsing every match; a policy value nothing honours is refused by name rather than stored and ignored |
 
-> **Status:** phases 0, 1, 2a, 2b, 2c-1, 2c-2 and 4a are released; 4b is
-> implemented and verified live (2026-10-19) and awaits its release. The newest
-> tag is `v0.8.0` (4a: search and pickaxe). Phase 3 (diff and history) is next.
-> Per-phase detail: [`history.md`](history.md).
+> **Status:** phases 0, 1, 2a, 2b, 2c-1, 2c-2, 4a and 4b are released. The newest
+> tag is `v0.9.0` (4b: GitLab URLs, `search` output modes and context). Phase 3
+> (diff and history) is next. Per-phase detail: [`history.md`](history.md).
 
 ### Source layout
 

@@ -514,8 +514,8 @@ tsconfig.build.json     emit: src/ only → dist/
   refs there.
 - **Phase 4a (done):** `search` (`git grep` over the tree of any ref) and
   `pickaxe` (`git log -S`: when the text appeared).
-- **Phase 4b (done, awaiting its release):** GitLab URL parsing and `url` support
-  on `get_file`/`list_tree` with `#L12-20` ranges, `search` output modes
+- **Phase 4b (done):** GitLab URL parsing and `url` support on
+  `get_file`/`list_tree` with `#L12-20` ranges, `search` output modes
   (`files`, `count`) and match context, the `cloneStrategy` refusal, and the
   truncation and stale-visibility review.
 - **Phase 3 (next):** `compare`, `diff_file`, `log`, `get_commit`, `blame`.
