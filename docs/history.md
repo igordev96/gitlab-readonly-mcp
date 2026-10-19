@@ -127,6 +127,11 @@ Running record of things learned while building. Keep appending.
 | 2026-10-19 | **A commit link has no path, so two "helpful" renderings would have been lies about it.** `formatUrl` printed `path="/"` for any link with an empty path, and warned that "the path may have lost part of it" whenever the ref was unconfirmed — both defensible for a blob link and false for a commit link, whose `ref` is the revision and which carries no path at all. `ref_confirmed="false"` is also expected there: a sha is not a ref of the project. | The path attribute and the lost-path note are suppressed for `target="commit"` (a history link with no pathspec still prints `path=""`), and whether the revision exists is answered by `commit="…"` rather than by `ref_confirmed`. Pinned by unit tests on the renderer and seen live (`target="commit" ref="8297d0da2215…" ref_confirmed="false" commit="8297d0da2215…"`). |
 | 2026-10-19 | **The "token rejected" state of the 4b check does not hold now.** The 3d probe authenticated and fetched: the first call took 2465 ms and the rest 70–200 ms, the mirror's stamp advanced from `2026-10-19T20:52:55.246Z` to `2026-10-19T22:23:31.578Z`, and no result carried `refresh_failed="true"`. | The earlier row stands as a description of a broken token, not of the token. This phase's live check therefore rests on freshly fetched data rather than on the cache, which is the stronger reading — and it removes the last doubt about whether `synced_at` movers were test-shaped. |
 | 2026-10-19 | **In this harness a tool result with `isError` surfaces as the failure of the whole `execute` snippet**, not as a value, and a successful call arrives as its text — a plain string, not `{ content: [...] }`. | A live probe that deliberately exercises a refusal must `try`/`catch` each call and report the caught message, or the successful output of the same snippet is lost. Learned by losing two probe reports to exactly that, and fixed by wrapping every call. |
+| 2026-10-20 | **The README's tool list had been stale since phase 3.** The "Wire into OpenCode" section listed eleven tools — the phase-2c set — while *Usage* had grown to sixteen. Nothing compared the two, and nothing failed when they disagreed. | The list is gone; the capability table is checked against the `server.registerTool` calls (16 names) as part of the phase check. A list of names is worth keeping only where something can fail when it goes out of date. |
+| 2026-10-20 | **Two examples had been wrong for as long as they existed, and reading them could not show it.** `log` and `blame` rows were documented as dates (`2026-10-15`); the tools print full ISO timestamps (`2026-10-15T12:32:33+01:00`). `list_tree` and `list_refs` rows looked space-aligned; git separates the columns with tabs. | Re-running the examples is a verification step, not a nicety: both errors surfaced only when the text was compared with real output. The examples now carry the format the tools print. |
+| 2026-10-20 | **Five facts each had two to four homes** — the tool list, tool semantics, phase history, the source layout, and freshness behaviour. That duplication is why the README grew past 600 lines while saying little a user could not get elsewhere. | One owner per fact: code for semantics, README for getting started and examples, `internals.md` for behaviour, `development.md` for build/release/layout, the plan for pending design, history for evidence. The README's duplicate of each was deleted, not moved. |
+| 2026-10-20 | **"One home" has a deliberate exception: the README's six-entry glossary.** `synced_at`, `refresh_failed`, `truncated`, `ref_confirmed`, `merge_base="none"` and `(no matches)` each get one line in the README so a human can read an agent's answer, while `internals.md` explains the mechanics. The duplication grep therefore still finds `synced_at` in four files. | The four are four roles — explanation, quick reference, design decision, evidence — not four explanations. Recorded so the next run of the check does not mistake the split for drift and "fix" it by deleting the glossary. |
+| 2026-10-20 | **`Measure-Object -Line` undercounts these files.** It reported the README as 527 lines when it was 637, and `history.md` as 499 when it was 568 — it does not count the same way `(Get-Content file).Count` does. | Use the array count whenever a size is quoted. Two size claims made earlier in this work were wrong until they were rechecked. |
 
 ---
 
@@ -134,6 +139,34 @@ Running record of things learned while building. Keep appending.
 
 What each phase actually touched. The plan keeps only the design; this is the
 blow-by-blow.
+
+### Phase 5 artifacts
+
+- `README.md` (`ccd740c`) — 637 → 385 lines. Deleted: the intro blockquote, the
+  21-call catalogue, the roadmap, development/versioning/layout, and the
+  per-tool prose the descriptions already own. Kept verbatim: requirements,
+  install, configuration, wiring, troubleshooting, security. Added: a 16-row
+  capability table, a seven-example quickstart, gotchas, a six-entry attribute
+  glossary, and a "Read more" pointer.
+- `docs/internals.md` (`b571ac7`, new, 123 lines) — why git, sources (mirror vs
+  registered clone), freshness (the three modes, fetch-on-miss, the `list_refs`
+  exception, per-source lock and stamp), failed refresh, the read-only
+  guarantee, and the blobless refusal. Rationale links to the plan rather than
+  being copied into a third place.
+- `docs/development.md` (`c6fb595`, new, 116 lines) — build and test, the
+  fixture, versioning, the hand release, the "adding a tool" path, and the one
+  source layout.
+- `docs/plan.md` (`c6fb595`) — the source-layout block replaced by a pointer
+  (−49 lines), plus the phase-5 row and status that say the phase takes no
+  release. Its finished-feature design was deliberately left alone.
+- `src/` — untouched. No service restart (nothing the server reports changed)
+  and no tag.
+- Verified: `npm run typecheck` clean; `npm test` 325 tests / 56 suites, 0 fail.
+  Every quickstart example re-run against `example-app` @ `fix/PROJ-7608` —
+  which is how the timestamp and separator errors surfaced and were fixed. All
+  16 tool names checked against the `server.registerTool` calls; the values printed
+  in the examples (`ttl=600`, `max_lines="500"`, `max_files="100"`,
+  `context="3"`) checked against `repoStore.ts`.
 
 ### Phase 3 artifacts
 
