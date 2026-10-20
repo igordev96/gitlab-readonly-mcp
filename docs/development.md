@@ -48,9 +48,9 @@ uniform width and rewrites the config examples inside fences — churn in the
 docs, not in the code. The README and `docs/` are hand-wrapped at 79 columns on
 purpose.
 
-Nothing enforces `format:check` yet: there is no CI and no commit hook, so
-running `npm run format` is voluntary. When a gate exists it should call the
-same script — see the tooling policy in [`plan.md`](plan.md).
+CI runs `format:check` on every push to `main`, calling this same script; there
+is still no commit hook, so running `npm run format` before pushing is voluntary.
+See the tooling policy in [`plan.md`](plan.md).
 
 The reformat itself is listed in
 [`.git-blame-ignore-revs`](../.git-blame-ignore-revs), so `git blame` still
@@ -101,7 +101,8 @@ Two rules are off for `test/**` only — `no-shadow` and
 does. In `src/` both stay on, and that is where the one real finding in the
 first run was: four `path` locals shadowing the `node:path` import.
 
-Like formatting, nothing enforces this yet.
+Like formatting, this runs in CI on every push to `main` and is voluntary
+locally.
 
 ## The test fixture
 

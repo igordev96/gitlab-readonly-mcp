@@ -36,6 +36,11 @@ oxlint passes of 2026-10-20 changed no behaviour, so neither has a live check �
 their gate was `npm run typecheck`, the 325-test suite, `npm run format:check`
 and `npm run lint`.
 
+CI is the exception to that rule: it is not a behaviour change, but it only
+counts when it runs. Verified live on 2026-10-20 — run #1 failed on one test (the
+same-second fixture ordering in the findings log below) and run #2 passed every
+step in 40 seconds, `npm ci` to `check:pack`.
+
 ---
 
 ## Findings log
@@ -152,6 +157,7 @@ Running record of things learned while building. Keep appending.
 | 2026-10-20 | **`engines` now says 24, but the type definitions argue for 26.** `@types/node` is `^26.6.5`, so `tsc --noEmit` accepts Node 26 APIs that a Node 24 runtime would not have. It is the same shape as the `lib: ES2023` question two rows up: what the compiler believes and what the runtime provides are separate questions. | Left alone, and noted rather than quietly changed: nothing in the code has reached for a newer API, and the types running ahead of the floor is a normal arrangement. If a read ever fails on an API that typechecked, this row is the first thing to check. |
 | 2026-10-20 | **The CI plan's packaging claim was backwards, and only measuring showed it.** The plan said that without a `files` field npm falls back to `.gitignore` — which lists `dist/` — so the tarball would omit the entry point, and the check was written to catch exactly that. Measured with npm 11.19: **79 files, `dist/index.js` among them**, plus `src/`, `test/`, `docs/`, every dotfile and both tsconfigs. No `.npmignore` exists. | The check asserts the tarball's *shape* instead — `dist/` plus the metadata npm always adds, nothing else. Red on 45 unexpected files, green on 34 once `files: ["dist"]` landed. The first version of the check passed before any fix, which is precisely what the red-before-green rule exists to catch; the plan's paragraph was corrected rather than left to mislead the next reader. |
 | 2026-10-20 | **The first CI run failed on one test, and the test was wrong rather than the code.** `log` asserted `["merge feat/MERGE", "branch work", "initial"]` and got `["merge feat/MERGE", "initial", "branch work"]`. The fixture made its commits back to back, so on a faster Linux runner two of them landed in the same second — and at the same second `git log`'s newest-first order is not creation order. Nothing in the server differs across platforms. | Fixture commits now carry explicit `GIT_AUTHOR_DATE` and `GIT_COMMITTER_DATE`, one minute apart from a fixed base. Reproduced locally by collapsing that spacing to zero, which produced the same actual/expected pair on Windows — the diagnosis is measured rather than inferred from the diff. Side benefit: fixture dates are reproducible, so a date can be asserted by value instead of by shape. |
+| 2026-10-20 | **A classic PAT with `repo` scope cannot push a workflow file.** The first push of the CI commit was rejected: *refusing to allow a Personal Access Token to create or update workflow `.github/workflows/ci.yml` without `workflow` scope*. The token authenticated fine for everything else — the scope is checked only when the push touches `.github/workflows/`. | Added `workflow` to the existing token; the value did not change, so nothing had to be moved between the config and the browser. Worth knowing before the next repository gets its first workflow, and worth checking with `x-oauth-scopes` rather than guessing from a 403. |
 
 ---
 
