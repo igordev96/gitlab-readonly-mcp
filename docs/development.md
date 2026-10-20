@@ -115,6 +115,13 @@ Anything that cannot be expressed in the fixture is either unit-tested against
 parsed output or listed as a known gap in [`history.md`](history.md); the live
 check against the real GitLab is what covers the rest.
 
+Fixture commits carry explicit dates, a minute apart from a fixed base, rather
+than whatever the clock says. Without that, two commits made inside one second
+have no defined order and `git log` breaks the tie by something other than
+creation order — which passed on Windows and failed on the first Linux CI run.
+Pinned dates also mean a fixture date can be asserted by value rather than by
+shape.
+
 ## Versioning
 
 The version the server reports comes from `package.json`, and the rule is that it

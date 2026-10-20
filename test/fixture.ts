@@ -12,6 +12,14 @@ import path from "node:path";
 
 const GIT = process.env.GIT_BIN ?? "git";
 
+// Fixture commits carry explicit dates. Two commits made inside the same second
+// have no defined order, and `git log` then breaks the tie by something other
+// than creation order — that passed on Windows and failed on Linux, where the
+// suite runs faster than a clock tick. A minute of spacing makes "newest first"
+// mean what it says, on any machine, and makes a fixture date reproducible.
+const BASE_TIME = Date.parse("2026-01-01T00:00:00Z");
+let commitSequence = 0;
+
 export interface Fixture {
   /** Directory containing everything; also the fixture's cache root. */
   root: string;
@@ -29,6 +37,8 @@ function runGit(cwd: string, args: string[]): string {
 }
 
 function commit(cwd: string, message: string): void {
+  commitSequence += 1;
+  const at = `${Math.floor((BASE_TIME + commitSequence * 60_000) / 1000)} +0000`;
   execFileSync(
     GIT,
     [
@@ -43,7 +53,11 @@ function commit(cwd: string, message: string): void {
       "-m",
       message,
     ],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, GIT_AUTHOR_DATE: at, GIT_COMMITTER_DATE: at },
+    },
   );
 }
 
