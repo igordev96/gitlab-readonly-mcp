@@ -10,6 +10,7 @@
 *.yml   text eol=lf
 
 # Dotfiles have no extension, so match them by name.
-.editorconfig  text eol=lf
-.gitattributes text eol=lf
-.gitignore     text eol=lf
+.editorconfig          text eol=lf
+.gitattributes         text eol=lf
+.git-blame-ignore-revs text eol=lf
+.gitignore             text eol=lf
