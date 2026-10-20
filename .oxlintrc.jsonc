@@ -1,0 +1,27 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import", "node"],
+  "env": {
+    "node": true,
+    "es2022": true,
+  },
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+  },
+  "ignorePatterns": ["dist/**"],
+  "options": {
+    "reportUnusedDisableDirectives": "warn",
+  },
+  "overrides": [
+    {
+      "files": ["test/**/*.ts"],
+      // A test helper named `store`, `git` or `client` reads better beside the
+      // test that uses it than a second, invented name would.
+      "rules": {
+        "eslint/no-shadow": "off",
+        "unicorn/consistent-function-scoping": "off",
+      },
+    },
+  ],
+}

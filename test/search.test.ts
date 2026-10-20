@@ -110,8 +110,7 @@ describe("parseGrepMatches", () => {
     // path/line/text fields are NUL-separated, but the next record's path is
     // joined to the previous record's text by a newline rather than a NUL.
     const rev = "a".repeat(40);
-    const output =
-      `${rev}:src/a.ts\u000012\u0000const x = 1;\n` + `${rev}:src/b.ts\u00003\u0000const x = 2;\n`;
+    const output = `${rev}:src/a.ts\u000012\u0000const x = 1;\n${rev}:src/b.ts\u00003\u0000const x = 2;\n`;
 
     assert.deepEqual(parseGrepMatches(output, rev), [
       { path: "src/a.ts", line: 12, text: "const x = 1;" },
@@ -586,7 +585,7 @@ describe("search over a fixture", () => {
   it("groups several files in one answer", async () => {
     const result = await store.search("demo", "export const", { ref: "fix/TEST-1" });
     const files = new Set(result.matches.map((match) => match.path));
-    assert.deepEqual([...files].sort(), ["src/components/Button.tsx", "src/index.tsx"]);
+    assert.deepEqual([...files].toSorted(), ["src/components/Button.tsx", "src/index.tsx"]);
   });
 
   it("matches case-insensitively by default, and exactly when asked", async () => {

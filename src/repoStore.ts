@@ -709,6 +709,7 @@ export function validateRef(ref: string): string {
   if (value.startsWith("-")) {
     throw new Error(`ref must not start with "-": ${JSON.stringify(ref)}`);
   }
+  // oxlint-disable-next-line no-control-regex -- NUL and newlines are rejected on purpose: this is the injection guard.
   if (/[\u0000\n\r]/.test(value)) {
     throw new Error("ref contains illegal characters.");
   }
@@ -724,6 +725,7 @@ export function validateRepoPath(filePath: string): string {
   if (value.startsWith("-")) {
     throw new Error(`path must not start with "-": ${JSON.stringify(filePath)}`);
   }
+  // oxlint-disable-next-line no-control-regex -- NUL and newlines are rejected on purpose: this is the injection guard.
   if (/[\u0000\n\r]/.test(value)) {
     throw new Error("path contains illegal characters.");
   }
@@ -742,6 +744,7 @@ export function validateQuery(query: string): string {
   if (query.length > MAX_QUERY_CHARS) {
     throw new Error(`query must be at most ${MAX_QUERY_CHARS} characters.`);
   }
+  // oxlint-disable-next-line no-control-regex -- NUL and newlines are rejected on purpose: this is the injection guard.
   if (/[\u0000\n\r]/.test(query)) {
     throw new Error("query contains illegal characters.");
   }
@@ -896,7 +899,7 @@ export function contextRanges(
   fileLines: number,
 ): { from: number; to: number }[] {
   const ranges: { from: number; to: number }[] = [];
-  const ascending = [...new Set(matchLines)].sort((left, right) => left - right);
+  const ascending = [...new Set(matchLines)].toSorted((left, right) => left - right);
 
   for (const line of ascending) {
     const from = Math.max(1, line - radius);
@@ -982,6 +985,7 @@ export function parseLogEntries(output: string): LogEntry[] {
   const entries: LogEntry[] = [];
   // The text after the last terminator is a torn record, never a complete one.
   for (const raw of output.split("\u001e").slice(0, -1)) {
+    // oxlint-disable-next-line no-control-regex -- strips the NUL git writes before each -z record.
     const record = raw.replace(/^\u0000+/, "").replace(/\n$/, "");
     if (!record) {
       continue;
@@ -1079,17 +1083,17 @@ export function parseNameStatus(output: string): NameStatusEntry[] {
     }
     if (paths === 2) {
       const oldPath = tokens[i + 1] ?? "";
-      const path = tokens[i + 2] ?? "";
+      const entryPath = tokens[i + 2] ?? "";
       i += 2;
-      if (oldPath && path) {
-        entries.push({ status, path, oldPath });
+      if (oldPath && entryPath) {
+        entries.push({ status, path: entryPath, oldPath });
       }
       continue;
     }
-    const path = tokens[i + 1] ?? "";
+    const entryPath = tokens[i + 1] ?? "";
     i += 1;
-    if (path) {
-      entries.push({ status, path });
+    if (entryPath) {
+      entries.push({ status, path: entryPath });
     }
   }
   return entries;
@@ -1137,12 +1141,12 @@ export function parseNumstat(output: string): NumstatEntry[] {
 
     if (pathField === "") {
       const oldPath = tokens[i + 1] ?? "";
-      const path = tokens[i + 2] ?? "";
+      const entryPath = tokens[i + 2] ?? "";
       i += 2;
-      if (!oldPath || !path) {
+      if (!oldPath || !entryPath) {
         break; // a rename the byte cap cut in half
       }
-      entries.push({ ...counts, path, oldPath });
+      entries.push({ ...counts, path: entryPath, oldPath });
       continue;
     }
     entries.push({ ...counts, path: pathField });
@@ -1165,6 +1169,11 @@ interface BlameMeta {
   boundary?: boolean;
 }
 
+/** Two-digit zero padding, the way `%aI` writes month, day, hour, minute and second. */
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
 /**
  * Format a blame timestamp the way `%aI` would: the author's own wall clock,
  * with their offset. Porcelain gives epoch seconds plus `+0100`-style tz, not a
@@ -1180,11 +1189,10 @@ export function blameDate(epoch: number | undefined, tz: string | undefined): st
   }
   const sign = match[1] === "-" ? -1 : 1;
   const shifted = new Date((epoch + sign * (Number(match[2]) * 60 + Number(match[3])) * 60) * 1000);
-  const pad = (value: number): string => String(value).padStart(2, "0");
   const offset = `${match[1] === "-" ? "-" : "+"}${match[2]}:${match[3]}`;
   return (
-    `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}` +
-    `T${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}${offset}`
+    `${shifted.getUTCFullYear()}-${pad2(shifted.getUTCMonth() + 1)}-${pad2(shifted.getUTCDate())}` +
+    `T${pad2(shifted.getUTCHours())}:${pad2(shifted.getUTCMinutes())}:${pad2(shifted.getUTCSeconds())}${offset}`
   );
 }
 
@@ -1292,6 +1300,7 @@ export function editDistance(a: string, b: string): number {
   }
 
   let previous = Array.from({ length: short.length + 1 }, (_, index) => index);
+  // oxlint-disable-next-line unicorn/no-new-array -- a pre-allocated DP row, written before it is read.
   let current = new Array<number>(short.length + 1);
 
   for (let i = 1; i <= long.length; i += 1) {
@@ -1994,10 +2003,10 @@ export class RepoStore {
 
     const files: FileContext[] = [];
     let read = 0;
-    for (const [path, lines] of byPath) {
+    for (const [filePath, lines] of byPath) {
       if (read >= CONTEXT_MAX_FILES) {
         files.push({
-          path,
+          path: filePath,
           lines: [],
           note: `context reads the first ${CONTEXT_MAX_FILES} files; this one shows its matches only`,
         });
@@ -2005,33 +2014,37 @@ export class RepoStore {
       }
       read += 1;
 
-      const shown = await this.git.run(["show", `${commit}:${path}`], {
+      const shown = await this.git.run(["show", `${commit}:${filePath}`], {
         gitDir: source.gitDir,
         maxBytes: HARD_FILE_MAX_BYTES,
       });
       if (shown.code !== 0) {
         const reason = this.redact(shown.stderr).trim().split("\n")[0] ?? "";
         files.push({
-          path,
+          path: filePath,
           lines: [],
           note: reason ? `the file could not be read: ${reason}` : "the file could not be read",
         });
         continue;
       }
       if (shown.stdout.includes("\u0000")) {
-        files.push({ path, lines: [], note: "the file is binary, so there are no lines to show" });
+        files.push({
+          path: filePath,
+          lines: [],
+          note: "the file is binary, so there are no lines to show",
+        });
         continue;
       }
       if (shown.truncated) {
         files.push({
-          path,
+          path: filePath,
           lines: [],
           note: `the file is larger than ${HARD_FILE_MAX_BYTES} bytes, so it was not read for context`,
         });
         continue;
       }
 
-      files.push({ path, lines: contextLines(shown.stdout, lines, radius) });
+      files.push({ path: filePath, lines: contextLines(shown.stdout, lines, radius) });
     }
 
     return { radius, files };
@@ -2136,7 +2149,7 @@ export class RepoStore {
       return {
         ...shape,
         matches: [],
-        fileHits: paths.slice(0, limit).map((path) => ({ path })),
+        fileHits: paths.slice(0, limit).map((filePath) => ({ path: filePath })),
         files: paths.length,
         truncated: paths.length > limit || found.truncated,
         outputTruncated: found.truncated,

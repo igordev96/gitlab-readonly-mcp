@@ -112,7 +112,7 @@ export class RepoRegistry {
   /** Every entry, ordered by project so that listings are stable. */
   async all(): Promise<Array<{ project: string; entry: RepoEntry }>> {
     return [...(await this.load())]
-      .sort(([a], [b]) => a.localeCompare(b))
+      .toSorted(([a], [b]) => a.localeCompare(b))
       .map(([project, entry]) => ({ project, entry }));
   }
 
@@ -184,7 +184,7 @@ export class RepoRegistry {
     const payload = `${JSON.stringify(
       {
         version: REGISTRY_VERSION,
-        repos: Object.fromEntries([...entries].sort(([a], [b]) => a.localeCompare(b))),
+        repos: Object.fromEntries([...entries].toSorted(([a], [b]) => a.localeCompare(b))),
       },
       null,
       2,

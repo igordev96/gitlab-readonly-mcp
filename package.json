@@ -13,6 +13,8 @@
     "dev": "tsx src/index.ts",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --import tsx --test \"test/**/*.test.ts\""
@@ -24,6 +26,7 @@
   "devDependencies": {
     "@types/node": "^26.6.5",
     "oxfmt": "0.74.0",
+    "oxlint": "1.89.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
