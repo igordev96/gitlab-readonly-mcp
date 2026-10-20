@@ -2,18 +2,17 @@
   "name": "gitlab-readonly-mcp",
   "version": "0.10.0",
   "private": true,
-  "type": "module",
   "description": "Read-only, git-backed MCP server for a self-managed GitLab",
-  "main": "dist/index.js",
   "bin": {
     "gitlab-readonly-mcp": "dist/index.js"
   },
-  "engines": {
-    "node": ">=20"
-  },
+  "type": "module",
+  "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "tsx src/index.ts",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --import tsx --test \"test/**/*.test.ts\""
@@ -24,7 +23,11 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
+    "oxfmt": "0.74.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
