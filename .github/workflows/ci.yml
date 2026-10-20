@@ -1,0 +1,36 @@
+name: CI
+
+# One job, on purpose: this is the local gate run somewhere that has none of the
+# local machine's state. The reasoning, and the axes deliberately left out, are
+# in docs/plan.md under "CI (GitHub Actions)".
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      # Builds first, so it always describes the source in this checkout.
+      - run: npm run check:pack
