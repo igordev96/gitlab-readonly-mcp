@@ -629,9 +629,9 @@ child_process `spawn` (array args) for git.
 ### Tooling
 
 `oxfmt` formats and `oxlint` lints, both as devDependencies; `tsc --noEmit`
-stays the type checker and `node:test` the test runner. Oxfmt is pinned exactly
-because it is pre-1.0: a minor bump must not be able to reformat the repository
-on its own.
+stays the type checker and `node:test` the test runner. Both are pinned exactly,
+because both are pre-1.0: a minor bump must not be able to change what the
+repository's own scripts produce inside unrelated work.
 
 Two settled choices, with the evidence that settled them:
 
@@ -641,6 +641,29 @@ Two settled choices, with the evidence that settled them:
 - **Markdown is out of scope** (`ignorePatterns: ["**/*.md"]`). Oxfmt pads table
   cells to uniform width and rewrites config examples inside fences — churn in
   the docs, not in the code. The docs are hand-wrapped deliberately.
+
+Linting follows the same shape: `correctness` at error, `suspicious` at warning,
+and no `--deny-warnings` until the warning count is zero and stays there. The
+`import` and `node` plugins are on because they are the two with signal for a
+process-spawning Node CLI; `--type-aware` is off, because `tsc --noEmit` already
+answers that question and a second type engine can only disagree with the first.
+
+Three rules about the rule set itself:
+
+- **A suppression is per line and carries its reason.** Five exist: the four
+  `no-control-regex` guards — NUL and newlines in a ref, a path or a query, plus
+  the stripper for git's `-z` records — and one `new Array<number>` that
+  pre-allocates a Levenshtein row. The rules stay on for everyone else.
+- **`no-shadow` and `consistent-function-scoping` are off for `test/**` only.**
+  A helper named `store` or `client` reads better beside its test than an
+  invented second name does. In `src/` they stayed on, and that is where the one
+  real finding was: four `path` locals shadowing the `node:path` import.
+- **`reportUnusedDisableDirectives` is on**, so a suppression that stops being
+  needed is reported rather than rotting into a lie.
+
+The lint config is `.jsonc` rather than `.json` for a single reason: the
+`overrides` block has to say why it exists, and a comment beside the decision is
+the only place that survives.
 
 Deferred deliberately, so nobody re-litigates it by accident:
 

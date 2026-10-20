@@ -53,6 +53,48 @@ read the file on their own.
 git config blame.ignoreRevsFile .git-blame-ignore-revs
 ```
 
+## Linting
+
+[oxlint](../.oxlintrc.jsonc) lints, pinned exactly for the same reason oxfmt is.
+It does not replace `tsc --noEmit`: oxlint is fast because it does no
+type-aware analysis, and `--type-aware` is deliberately off — a second type
+engine can only disagree with the first.
+
+```powershell
+npm run lint      # report
+npm run lint:fix  # apply what is safely fixable
+```
+
+On top of oxlint's defaults the config enables the **import** and **node**
+plugins, which are off by default and are the two with real signal for a Node
+CLI that spawns processes. Categories are `correctness` at error and
+`suspicious` at warning; `--deny-warnings` is not set, so a warning is visible
+without failing a run.
+
+Suppressions are per line, never per rule, and each carries its reason:
+
+```ts
+// oxlint-disable-next-line no-control-regex -- NUL and newlines are rejected on purpose: this is the injection guard.
+```
+
+Five exist, all that shape: the four `no-control-regex` guards (NUL and newlines
+in a ref, a path and a query, plus the stripper for git's `-z` records) and one
+`new Array<number>` that pre-allocates a Levenshtein row.
+`reportUnusedDisableDirectives` is on, so a suppression that stops being needed
+is reported rather than rotting.
+
+Note the naming: core rules are unprefixed (`no-control-regex`), plugin rules
+keep the prefix (`unicorn/no-new-array`). A directive that matches no finding
+suppresses nothing and is itself reported as unused.
+
+Two rules are off for `test/**` only — `no-shadow` and
+`consistent-function-scoping` — because a helper named `store`, `git` or
+`client` reads better beside the test that uses it than an invented second name
+does. In `src/` both stay on, and that is where the one real finding in the
+first run was: four `path` locals shadowing the `node:path` import.
+
+Like formatting, nothing enforces this yet.
+
 ## The test fixture
 
 Tests never touch the network or need a token. `test/fixture.ts` builds a

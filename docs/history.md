@@ -31,9 +31,10 @@ Phase 0 predates the first tag: it was verified by hand — mirror clone succeed
 `git show "fix/PROJ-7608:<path>"` printed the file. See the runbook below.
 
 Tooling changes take no release, and so no row: they are recorded in the
-findings log below and in [`development.md`](development.md). The oxfmt pass of
-2026-10-20 changed no behaviour, so it has no live check either — its gate was
-`npm run typecheck`, the 325-test suite and `npm run format:check`.
+findings log below and in [`development.md`](development.md). The oxfmt and
+oxlint passes of 2026-10-20 changed no behaviour, so neither has a live check —
+their gate was `npm run typecheck`, the 325-test suite, `npm run format:check`
+and `npm run lint`.
 
 ---
 
@@ -143,6 +144,11 @@ Running record of things learned while building. Keep appending.
 | 2026-10-20 | **`.git-blame-ignore-revs` cannot contain the SHA of the commit that adds it**, which is the whole point of the file. | Two commits: the reformat, then the ignore file. Verified with `git blame --ignore-revs-file .git-blame-ignore-revs`: `src/config.ts:60` resolves to `77b180a6` rather than to the format commit, so blame still names the author. |
 | 2026-10-20 | **A new extension-less dotfile is not covered by the `eol=lf` rules.** `.gitattributes` matches dotfiles by name, so `.git-blame-ignore-revs` fell under `text=auto` and git warned that `core.autocrlf` would rewrite it to CRLF on the next checkout — the one line-ending drift the project takes trouble to avoid. | Listed explicitly in `.gitattributes`, beside `.editorconfig` and `.gitignore`. |
 | 2026-10-20 | **The oxc and hook tooling would raise the Node floor above what the server needs.** `oxlint` needs `^20.19` or `>=22.12`, `lint-staged` `>=22.22.1`, `@commitlint/cli` `>=22.12`; `engines` still says `>=20`, and Node 20 reached end-of-life on 2026-04-30. | Not yet changed. The floor becomes `>=24` with an exact `.nvmrc` when the toolchain work continues. Recorded here so the mismatch is not discovered by a failing install. |
+| 2026-10-20 | **The first oxlint run found 29 issues across six rules, and exactly one was a hazard.** Four `path` locals in `repoStore.ts` shadowed the `node:path` import — in the file whose job is manipulating paths, so a reader cannot tell which `path` a line means. The rest were style (shadowing in tests, a function that could be hoisted, a deliberate `new Array`) or mechanical (five mutating `.sort()` calls and one pointless concatenation). | Renamed to `entryPath` / `filePath`; a `test/**`-scoped override turns off the two naming rules, where a helper called `store` or `client` reads better beside its test than an invented name; five per-line suppressions carry a reason. Running in report mode *before* fixing anything is what made the triage possible — `--fix` first would have buried the shadowing under 24 mechanical edits. |
+| 2026-10-20 | **`toSorted()` needed a compiler setting the runtime did not need.** The typings live in `lib: ES2023`, so `tsconfig.json` moved up from `ES2022`, while `Array.prototype.toSorted` has shipped since Node 20 — below the floor that was already claimed. What the compiler believes the language offers and which Node actually runs the code are two separate questions. | `"lib": ["ES2023"]`, nothing more. Worth remembering when `engines` moves: this setting is about types, not about the runtime floor. |
+| 2026-10-20 | **The `import` plugin resolved every NodeNext specifier, which is what I expected it to get wrong.** `import … from "./x.js"` names a file that exists only as `x.ts` before compilation, and a resolver ignoring `moduleResolution: NodeNext` reports all of them as unresolved — the usual reason this rule gets switched off in an ESM TypeScript project. | Zero `import/no-unresolved` findings in the first run, so the plugin stays on and is now load-bearing rather than decorative. Verified by the run, not assumed: if it turns red after a TypeScript or oxlint bump, this row is what to reread before disabling anything. |
+| 2026-10-20 | **`eslint` in oxlint's `plugins` array is a no-op.** `oxlint --print-config` drops it — the core ESLint rules are always on — so naming it changes nothing while implying it is a plugin that could be removed. | The config lists only the five entries that add rules: `typescript`, `unicorn`, `oxc`, `import`, `node`. The effective plugin set is now readable from the file instead of restating a default. |
+| 2026-10-20 | **A suppression directive has to spell the rule the way the report does.** Core rules are unprefixed (`no-control-regex`); plugin rules keep their namespace (`unicorn/no-new-array`). A directive naming the wrong one suppresses nothing, and the finding stays visible only if someone reads the run. | Both shapes appear in the tree and in `development.md`'s example. `reportUnusedDisableDirectives` adds the second signal: a directive that matches no finding is reported as unused, so a stale or mistyped suppression does not sit there quietly claiming to be needed. |
 
 ---
 
