@@ -92,11 +92,59 @@ Or add it to configuration by hand (`mcp.servers`):
 The command is the installed binary, so the entry point no longer depends on
 where the checkout lives — a global MCP server's working directory is the
 workspace it is launched from, not this project. If the bare name does not
-resolve on your machine, `npm prefix -g` gives the prefix; `<prefix>\gitlab-readonly-mcp.cmd`
-is the same package by absolute path.
+resolve on your machine, `npm prefix -g` gives the prefix;
+`<prefix>\gitlab-readonly-mcp.cmd` is the same package by absolute path.
 
 The tools appear as `gitlab_<tool>` — `gitlab_get_file`, `gitlab_log`, and so
 on. All sixteen are listed below.
+
+## Wire into Cursor
+
+Cursor reads MCP servers from a `mcpServers` object, in `.cursor/mcp.json` for
+one project or `~/.cursor/mcp.json` for every project
+(`%USERPROFILE%\.cursor\mcp.json` on Windows).
+
+```jsonc
+{
+  "mcpServers": {
+    "gitlab": {
+      "command": "cmd",
+      "args": ["/c", "gitlab-readonly-mcp"],
+      "env": {
+        "GITLAB_HOST": "https://gitlab.example.com",
+        "GITLAB_TOKEN": "${env:GITLAB_TOKEN}",
+        "GITLAB_DEFAULT_PROJECT": "group/subgroup/repo"
+      }
+    }
+  }
+}
+```
+
+**On Windows the `cmd /c` wrapper is not optional.** The installed package is a
+`.cmd` shim, and Cursor starts the command itself rather than through a shell:
+`"command": "gitlab-readonly-mcp"` fails with `ENOENT` and the server never
+appears in the list. On macOS and Linux the bare name is correct:
+
+```jsonc
+"command": "gitlab-readonly-mcp",
+```
+
+Quit Cursor completely and reopen it; a window reload is not always enough. The
+server then shows under **Settings → MCP**, and anything it printed on the way
+up is in **Output → MCP Logs** — the first place to look when the entry exists
+but its tools do not.
+
+Two traps, both silent:
+
+- **The interpolation syntax is not OpenCode's.** Cursor resolves
+  `${env:NAME}`; OpenCode resolves `{env:NAME}`. Copy a config from one to the
+  other unchanged and the literal string is passed as the token, which GitLab
+  rejects.
+- **`${env:GITLAB_TOKEN}` reads Cursor's own environment**, not your shell's
+  history: a variable set only in the current terminal is invisible to an app
+  started from the taskbar. Use the OS-level variable, or point `envFile` at a
+  file: `"envFile": "${workspaceFolder}/.env"`. A token pasted literally works
+  too, but then `.cursor/mcp.json` must stay out of git.
 
 ## What it can do
 
