@@ -754,7 +754,7 @@ rule enforced rather than remembered.
     "servers": {
       "gitlab": {
         "type": "local",
-        "command": ["node", "C:\\absolute\\path\\to\\dist\\index.js"],
+        "command": ["gitlab-readonly-mcp"],
         "environment": {
           "GITLAB_HOST": "https://<GITLAB_HOST>",
           "GITLAB_TOKEN": "{env:GITLAB_TOKEN}",

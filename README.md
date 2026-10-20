@@ -22,10 +22,21 @@ git's strengths and, on a self-managed free tier, the REST API's weaknesses.
 
 ## Install
 
+Not published to npm (`private: true`). Build a tarball and install it
+globally:
+
 ```powershell
 npm install
-npm run build
+npm pack --pack-destination .          # gitlab-readonly-mcp-0.10.0.tgz
+npm install -g .\gitlab-readonly-mcp-0.10.0.tgz
 ```
+
+That puts `gitlab-readonly-mcp` on `PATH`; it speaks MCP on stdio from any
+directory. To upgrade, repeat after the version bump. To uninstall,
+`npm rm -g gitlab-readonly-mcp`.
+
+Under `nvm`, global packages live inside the active Node version, so switching
+versions hides the command until you reinstall it.
 
 ## Configuration
 
@@ -52,7 +63,7 @@ opencode mcp add gitlab --global `
   --env GITLAB_HOST=https://gitlab.example.com `
   --env 'GITLAB_TOKEN={env:GITLAB_TOKEN}' `
   --env GITLAB_DEFAULT_PROJECT=group/subgroup/repo `
-  -- node "C:\absolute\path\to\dist\index.js"
+  -- gitlab-readonly-mcp
 ```
 
 Or add it to configuration by hand (`mcp.servers`):
@@ -64,7 +75,7 @@ Or add it to configuration by hand (`mcp.servers`):
     "servers": {
       "gitlab": {
         "type": "local",
-        "command": ["node", "C:\\absolute\\path\\to\\dist\\index.js"],
+        "command": ["gitlab-readonly-mcp"],
         "environment": {
           "GITLAB_HOST": "https://gitlab.example.com",
           "GITLAB_TOKEN": "{env:GITLAB_TOKEN}",
@@ -76,8 +87,11 @@ Or add it to configuration by hand (`mcp.servers`):
 }
 ```
 
-Use the **absolute** path to `dist/index.js`: a global MCP server's working
-directory is the workspace it is launched from, not this project.
+The command is the installed binary, so the entry point no longer depends on
+where the checkout lives — a global MCP server's working directory is the
+workspace it is launched from, not this project. If the bare name does not
+resolve on your machine, `npm prefix -g` gives the prefix; `<prefix>\gitlab-readonly-mcp.cmd`
+is the same package by absolute path.
 
 The tools appear as `gitlab_<tool>` — `gitlab_get_file`, `gitlab_log`, and so
 on. All sixteen are listed below.

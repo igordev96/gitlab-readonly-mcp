@@ -144,6 +144,10 @@ There are no `preversion` / `version` / `postversion` scripts, so nothing commit
 tags or pushes behind your back. The milestone row in `history.md` is written
 *after* the tag exists, because a commit cannot reference its own tag.
 
+The installed copy is separate from the tag: `npm pack` then
+`npm install -g .\gitlab-readonly-mcp-X.Y.Z.tgz` to update it, and restart the
+MCP server — a running process keeps the code it started with.
+
 ## Adding a tool
 
 The mechanical path; the process rules are in `AGENTS.md`.

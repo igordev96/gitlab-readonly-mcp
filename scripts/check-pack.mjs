@@ -10,9 +10,17 @@
 // of packaging mistake a check can catch before a user does.
 
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 /** The entry point `bin` and `main` both point at. */
 const REQUIRED = ["dist/index.js"];
+
+/** The commands `npm install -g` puts on PATH, which must also be in the tarball. */
+function binTargets() {
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const bin = typeof manifest.bin === "string" ? { [manifest.name]: manifest.bin } : manifest.bin;
+  return Object.values(bin ?? {});
+}
 
 /** npm adds these whether or not they are in `files`. */
 const ALWAYS_SHIPPED = new Set([
@@ -53,6 +61,15 @@ if (missing.length > 0) {
   problems.push(
     `check:pack: ${pack.filename} would ship ${shipped.length} file(s), none of them ${missing.join(", ")}.`,
     "An install of that tarball would have no entry point to run.",
+  );
+}
+
+const missingBin = binTargets().filter((target) => !shipped.includes(target));
+
+if (missingBin.length > 0) {
+  problems.push(
+    `check:pack: ${pack.filename} would install a command for a file it does not ship: ${missingBin.join(", ")}.`,
+    "`bin` in package.json has to name a path inside the tarball.",
   );
 }
 
