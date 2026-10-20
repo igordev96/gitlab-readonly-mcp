@@ -79,10 +79,7 @@ describe("store layer", () => {
   });
 
   it("raises NotFoundError for a missing path", async () => {
-    await assert.rejects(
-      () => store.readFile("demo", "main", "src/nope.tsx"),
-      NotFoundError,
-    );
+    await assert.rejects(() => store.readFile("demo", "main", "src/nope.tsx"), NotFoundError);
   });
 
   it("rejects a ref starting with '-' (argument injection)", async () => {
@@ -347,11 +344,7 @@ describe("the project registry and freshness policy", () => {
   /** Write a registry by hand, the way a user sets a per-project policy. */
   function register(cache: string, repos: Record<string, unknown>): void {
     fs.mkdirSync(cache, { recursive: true });
-    fs.writeFileSync(
-      path.join(cache, "repos.json"),
-      JSON.stringify({ version: 1, repos }),
-      "utf8",
-    );
+    fs.writeFileSync(path.join(cache, "repos.json"), JSON.stringify({ version: 1, repos }), "utf8");
   }
 
   const manual = { source: "mirror", cloneStrategy: "full", freshnessMode: "manual" };
@@ -396,7 +389,10 @@ describe("the project registry and freshness policy", () => {
     const synced = await store.syncRepo("demo");
     assert.equal(synced.project, "demo");
     assert.ok(synced.syncedAt instanceof Date);
-    assert.match((await store.readFile("demo", "main", "src/index.tsx")).content, /export const hello/);
+    assert.match(
+      (await store.readFile("demo", "main", "src/index.tsx")).content,
+      /export const hello/,
+    );
   });
 
   it("does not fetch in manual mode even when the ref is missing", async () => {

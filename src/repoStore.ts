@@ -1237,7 +1237,9 @@ export function parseBlame(output: string): BlameGroup[] {
     if (!group) {
       continue;
     }
-    const field = /^(author|author-mail|author-time|author-tz|summary|boundary)(?: (.*))?$/.exec(raw);
+    const field = /^(author|author-mail|author-time|author-tz|summary|boundary)(?: (.*))?$/.exec(
+      raw,
+    );
     if (!field) {
       continue;
     }
@@ -1353,8 +1355,7 @@ export function rankSimilar(refs: RefEntry[], query: string, limit = 5): RefEntr
  * `refs/heads` alone would hide most of the branches the clone has.
  */
 function patternsFor(kind: RefKindFilter, source: GitSource): string[] {
-  const remotes =
-    source.kind === "local" && source.remote ? [`refs/remotes/${source.remote}`] : [];
+  const remotes = source.kind === "local" && source.remote ? [`refs/remotes/${source.remote}`] : [];
   if (kind === "branches") {
     return ["refs/heads", ...remotes];
   }
@@ -1439,7 +1440,7 @@ export function parseTreeEntries(output: string): TreeEntry[] {
   return entries;
 }
 
-/** A "did you mean" message for an unresolvable ref, with suggestions if any. */export function formatRefNotFound(
+/** A "did you mean" message for an unresolvable ref, with suggestions if any. */ export function formatRefNotFound(
   project: string,
   ref: string,
   suggestions: RefEntry[] = [],
@@ -1829,12 +1830,7 @@ export class RepoStore {
    * mistake worth naming, because git's "not a tree object" never says which
    * tool the caller actually wanted.
    */
-  private treeFailure(
-    project: string,
-    ref: string,
-    dirPath: string,
-    result: GitRunResult,
-  ): Error {
+  private treeFailure(project: string, ref: string, dirPath: string, result: GitRunResult): Error {
     if (/not a tree object/i.test(result.stderr)) {
       return new NotFoundError(
         `"${dirPath}" is a file at "${ref}" in ${project}, not a directory. Use get_file to read it.`,
@@ -1894,8 +1890,7 @@ export class RepoStore {
     }
 
     const binary = shown.stdout.includes("\u0000");
-    const sliced =
-      options.lines && !binary ? sliceLines(shown.stdout, options.lines) : undefined;
+    const sliced = options.lines && !binary ? sliceLines(shown.stdout, options.lines) : undefined;
     const syncMs = await this.sources.lastSyncAt(source.gitDir);
     return {
       project: cleanProject,
@@ -2356,10 +2351,10 @@ export class RepoStore {
       );
     }
 
-    const meta = await this.git.run(
-      ["show", "--no-patch", `--format=${COMMIT_FORMAT}`, commit],
-      { gitDir: source.gitDir, maxBytes: HISTORY_MAX_BYTES },
-    );
+    const meta = await this.git.run(["show", "--no-patch", `--format=${COMMIT_FORMAT}`, commit], {
+      gitDir: source.gitDir,
+      maxBytes: HISTORY_MAX_BYTES,
+    });
     if (meta.code !== 0) {
       throw new GitError(
         `Failed to read commit ${commit}.`,
@@ -2389,10 +2384,7 @@ export class RepoStore {
     let patch: string | undefined;
     let patchTruncated = false;
     if (options.patch && !merge) {
-      const maxBytes = Math.min(
-        options.maxBytes ?? DEFAULT_FILE_MAX_BYTES,
-        HARD_FILE_MAX_BYTES,
-      );
+      const maxBytes = Math.min(options.maxBytes ?? DEFAULT_FILE_MAX_BYTES, HARD_FILE_MAX_BYTES);
       const shown = await this.git.run(
         ["show", "--format=", "--patch", "-M", `--unified=${DEFAULT_DIFF_CONTEXT}`, commit],
         { gitDir: source.gitDir, maxBytes },
@@ -2443,11 +2435,7 @@ export class RepoStore {
    * is clamped instead of turning into a git fatal. Blame itself then runs over
    * the clamped range only.
    */
-  async blame(
-    project: string,
-    filePath: string,
-    options: BlameOptions = {},
-  ): Promise<BlameResult> {
+  async blame(project: string, filePath: string, options: BlameOptions = {}): Promise<BlameResult> {
     const cleanProject = validateProject(project);
     const cleanPath = validateRepoPath(filePath);
 
@@ -2588,11 +2576,13 @@ export class RepoStore {
   ): Promise<CompareResult> {
     const cleanProject = validateProject(project);
     const cleanPath = options.path === undefined ? undefined : validateRepoPath(options.path);
-    const { source, from: base, to: tip, fetched, refreshError } = await this.resolvePair(
-      cleanProject,
-      from,
-      to,
-    );
+    const {
+      source,
+      from: base,
+      to: tip,
+      fetched,
+      refreshError,
+    } = await this.resolvePair(cleanProject, from, to);
 
     const mergeBaseRequested = options.mergeBase !== false;
     let mergeBase: string | undefined;
@@ -2670,11 +2660,13 @@ export class RepoStore {
   ): Promise<DiffFileResult> {
     const cleanProject = validateProject(project);
     const cleanPath = validateRepoPath(filePath);
-    const { source, from: base, to: tip, fetched, refreshError } = await this.resolvePair(
-      cleanProject,
-      from,
-      to,
-    );
+    const {
+      source,
+      from: base,
+      to: tip,
+      fetched,
+      refreshError,
+    } = await this.resolvePair(cleanProject, from, to);
 
     const context = Math.min(
       Math.max(options.context ?? DEFAULT_DIFF_CONTEXT, 0),
@@ -2682,16 +2674,7 @@ export class RepoStore {
     );
     const maxBytes = Math.min(options.maxBytes ?? DEFAULT_FILE_MAX_BYTES, HARD_FILE_MAX_BYTES);
     const shown = await this.git.run(
-      [
-        "diff",
-        "--patch",
-        "-M",
-        `--unified=${context}`,
-        base.commit,
-        tip.commit,
-        "--",
-        cleanPath,
-      ],
+      ["diff", "--patch", "-M", `--unified=${context}`, base.commit, tip.commit, "--", cleanPath],
       { gitDir: source.gitDir, maxBytes },
     );
     if (shown.code !== 0) {
@@ -2809,14 +2792,14 @@ export class RepoStore {
     base: string[],
     pathspec: string[],
   ): Promise<{ files: CommitFile[]; additions: number; deletions: number; truncated: boolean }> {
-    const statusRun = await this.git.run(
-      [...base, "--name-status", "-z", "-M", ...pathspec],
-      { gitDir: source.gitDir, maxBytes: HISTORY_MAX_BYTES },
-    );
-    const countRun = await this.git.run(
-      [...base, "--numstat", "-z", "-M", ...pathspec],
-      { gitDir: source.gitDir, maxBytes: HISTORY_MAX_BYTES },
-    );
+    const statusRun = await this.git.run([...base, "--name-status", "-z", "-M", ...pathspec], {
+      gitDir: source.gitDir,
+      maxBytes: HISTORY_MAX_BYTES,
+    });
+    const countRun = await this.git.run([...base, "--numstat", "-z", "-M", ...pathspec], {
+      gitDir: source.gitDir,
+      maxBytes: HISTORY_MAX_BYTES,
+    });
     for (const run of [statusRun, countRun]) {
       if (run.code !== 0) {
         throw new GitError(
@@ -2935,16 +2918,12 @@ export class RepoStore {
    * subject can contain anything without corrupting the row.
    */
   private async rawRefs(source: GitSource, patterns: string[]): Promise<RefEntry[]> {
-    const result = await this.git.run(
-      ["for-each-ref", `--format=${REF_FORMAT}`, ...patterns],
-      { gitDir: source.gitDir, maxBytes: REF_MAX_BYTES },
-    );
+    const result = await this.git.run(["for-each-ref", `--format=${REF_FORMAT}`, ...patterns], {
+      gitDir: source.gitDir,
+      maxBytes: REF_MAX_BYTES,
+    });
     if (result.code !== 0) {
-      throw new GitError(
-        "Failed to list refs.",
-        result.code,
-        this.redact(result.stderr).trim(),
-      );
+      throw new GitError("Failed to list refs.", result.code, this.redact(result.stderr).trim());
     }
 
     const refs: RefEntry[] = [];

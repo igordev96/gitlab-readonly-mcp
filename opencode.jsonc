@@ -4,6 +4,6 @@
     // Enforced gates for the genuinely risky actions. Normal project work stays
     // fluid; these prompt instead of proceeding silently.
     { "action": "edit", "resource": "~/.config/opencode/**", "effect": "ask" },
-    { "action": "shell", "resource": "git push*", "effect": "ask" }
-  ]
+    { "action": "shell", "resource": "git push*", "effect": "ask" },
+  ],
 }

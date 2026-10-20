@@ -47,10 +47,7 @@ describe("list_refs", () => {
     assert.equal(result.project, "demo");
     assert.equal(result.kind, "branches");
     assert.equal(result.defaultBranch, "main");
-    assert.deepEqual(
-      result.refs.map((entry) => entry.name).sort(),
-      ["fix/TEST-1", "main"],
-    );
+    assert.deepEqual(result.refs.map((entry) => entry.name).sort(), ["fix/TEST-1", "main"]);
     assert.match(result.refs[0]?.commit ?? "", /^[0-9a-f]{40}$/);
     assert.ok(result.syncedAt instanceof Date, "syncedAt should be a Date");
   });

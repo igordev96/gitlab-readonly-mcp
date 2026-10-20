@@ -63,10 +63,7 @@ export function decodeOutput(buffer: Buffer, truncated: boolean): string {
   // How many continuation bytes (10xxxxxx) the stream ends with: at most three
   // can belong to one character.
   let continuations = 0;
-  while (
-    continuations < 3 &&
-    ((buffer[buffer.length - 1 - continuations] ?? 0) & 0xc0) === 0x80
-  ) {
+  while (continuations < 3 && ((buffer[buffer.length - 1 - continuations] ?? 0) & 0xc0) === 0x80) {
     continuations += 1;
   }
 

@@ -14,10 +14,14 @@ const MAX_EXCERPT = 500;
  * certificate failures also contain "unable to access", and authentication is
  * checked first because GitLab reports an inaccessible project as a 401.
  */
-const AUTH = /(authentication failed|http basic: access denied|invalid credentials|could not read username|terminal prompts disabled|401 unauthorized|403 forbidden)/i;
-const NOT_FOUND = /(repository not found|project you were looking for could not be found|remote: not found|does not appear to be a git repository)/i;
-const TLS = /(ssl certificate problem|self-signed certificate|unable to get local issuer certificate|certificate verify failed|schannel)/i;
-const NETWORK = /(could not resolve host|failed to connect|connection refused|connection timed out|operation timed out|network is unreachable|unable to access)/i;
+const AUTH =
+  /(authentication failed|http basic: access denied|invalid credentials|could not read username|terminal prompts disabled|401 unauthorized|403 forbidden)/i;
+const NOT_FOUND =
+  /(repository not found|project you were looking for could not be found|remote: not found|does not appear to be a git repository)/i;
+const TLS =
+  /(ssl certificate problem|self-signed certificate|unable to get local issuer certificate|certificate verify failed|schannel)/i;
+const NETWORK =
+  /(could not resolve host|failed to connect|connection refused|connection timed out|operation timed out|network is unreachable|unable to access)/i;
 
 const AUTH_HINT =
   "GitLab rejected the credentials. The token may be missing, expired, or lack " +
@@ -33,8 +37,7 @@ const TLS_HINT =
   "TLS verification failed. If GitLab uses a private CA, point GITLAB_CA_INFO " +
   "at the CA bundle.";
 
-const NETWORK_HINT =
-  "Could not reach GitLab. Check network and VPN access to the host.";
+const NETWORK_HINT = "Could not reach GitLab. Check network and VPN access to the host.";
 
 /** Identify a known failure mode from git's stderr, if we recognise it. */
 export function hintForGitStderr(stderr: string): string | undefined {

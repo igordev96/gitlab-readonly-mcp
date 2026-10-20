@@ -123,7 +123,10 @@ describe("parseGitlabUrl", () => {
       () => parseGitlabUrl(`${HOST}/demo/-/something/1`, HOST),
       /is not a link this server reads/,
     );
-    assert.throws(() => parseGitlabUrl(`${HOST}/demo.git`, HOST), /is not a link this server reads/);
+    assert.throws(
+      () => parseGitlabUrl(`${HOST}/demo.git`, HOST),
+      /is not a link this server reads/,
+    );
     assert.throws(() => parseGitlabUrl(`${HOST}/demo`, HOST), /is not a link this server reads/);
     assert.throws(() => parseGitlabUrl("not a url at all", HOST), /Not a URL/);
     assert.throws(() => parseGitlabUrl("   ", HOST), /must not be empty/);
@@ -461,7 +464,10 @@ describe("linkTargetRefusal", () => {
       linkTargetRefusal("u", "commit", "log") ?? "",
       /is a commit link; use get_commit for it\./,
     );
-    assert.match(linkTargetRefusal("u", "log", "commit") ?? "", /is a history link; use log for it\./);
+    assert.match(
+      linkTargetRefusal("u", "log", "commit") ?? "",
+      /is a history link; use log for it\./,
+    );
   });
 
   it("stays quiet for the link the tool does read", () => {

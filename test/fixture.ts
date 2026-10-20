@@ -31,8 +31,18 @@ function runGit(cwd: string, args: string[]): string {
 function commit(cwd: string, message: string): void {
   execFileSync(
     GIT,
-    ["-C", cwd, "-c", "user.email=test@example.com", "-c", "user.name=Test",
-      "commit", "-q", "-m", message],
+    [
+      "-C",
+      cwd,
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "user.name=Test",
+      "commit",
+      "-q",
+      "-m",
+      message,
+    ],
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   );
 }
@@ -74,8 +84,19 @@ export function buildFixture(root: string): Fixture {
   // Annotated, so tests exercise tag peeling and not just lightweight refs.
   execFileSync(
     GIT,
-    ["-C", work, "-c", "user.email=test@example.com", "-c", "user.name=Test",
-      "tag", "-a", "v1.0", "-m", "release 1.0"],
+    [
+      "-C",
+      work,
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "user.name=Test",
+      "tag",
+      "-a",
+      "v1.0",
+      "-m",
+      "release 1.0",
+    ],
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   );
 
@@ -228,8 +249,20 @@ export function addMergedBranch(
   runGit(work, ["checkout", "-q", "main"]);
   execFileSync(
     GIT,
-    ["-C", work, "-c", "user.email=test@example.com", "-c", "user.name=Test",
-      "merge", "-q", "--no-ff", branch, "-m", message],
+    [
+      "-C",
+      work,
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "user.name=Test",
+      "merge",
+      "-q",
+      "--no-ff",
+      branch,
+      "-m",
+      message,
+    ],
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   );
   publish(work);

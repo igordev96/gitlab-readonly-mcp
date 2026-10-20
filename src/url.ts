@@ -205,15 +205,9 @@ export function parseLineAnchor(hash: string): LineRange | undefined {
  * reported as unconfirmed, so the caller's read fails with the usual close-match
  * suggestions rather than reading the wrong thing confidently.
  */
-export function resolveUrlParts(
-  rest: string,
-  refs: RefName[],
-  hint?: "branch" | "tag",
-): UrlParts {
+export function resolveUrlParts(rest: string, refs: RefName[], hint?: "branch" | "tag"): UrlParts {
   const trimmed = rest.replace(/^\/+|\/+$/g, "");
-  const matches = refs.filter(
-    (ref) => trimmed === ref.name || trimmed.startsWith(`${ref.name}/`),
-  );
+  const matches = refs.filter((ref) => trimmed === ref.name || trimmed.startsWith(`${ref.name}/`));
 
   if (matches.length > 0) {
     const rank = (kind: "branch" | "tag"): number =>
@@ -245,8 +239,9 @@ export function hostOf(value: string): string | undefined {
     return undefined;
   }
   try {
-    return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`)
-      .hostname.toLowerCase();
+    return new URL(
+      /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`,
+    ).hostname.toLowerCase();
   } catch {
     return undefined;
   }

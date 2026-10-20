@@ -40,9 +40,9 @@ describe("compiled entry point", () => {
 
       // The reported version must come from package.json, so it cannot drift
       // from the tag it was released as.
-      const pkg = JSON.parse(
-        fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"),
-      ) as { version?: string };
+      const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as {
+        version?: string;
+      };
       assert.equal(
         info?.version,
         pkg.version,

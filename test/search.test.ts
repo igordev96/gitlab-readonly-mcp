@@ -23,7 +23,12 @@ import {
   type SearchResult,
 } from "../src/repoStore.js";
 import { formatPickaxe, formatSearch, matchLine } from "../src/tools/search.js";
-import { addBranchWithFile, buildFixture, commitOnBranch, publishBranchFromElsewhere } from "./fixture.js";
+import {
+  addBranchWithFile,
+  buildFixture,
+  commitOnBranch,
+  publishBranchFromElsewhere,
+} from "./fixture.js";
 
 const fixture = buildFixture(path.join(os.tmpdir(), "glmcp-fixture-search"));
 
@@ -66,10 +71,16 @@ function publishMany(work: string, branch: string, count: number): void {
   execFileSync(
     "git",
     [
-      "-C", work,
-      "-c", "user.email=test@example.com",
-      "-c", "user.name=Test",
-      "commit", "-q", "-m", "many files",
+      "-C",
+      work,
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "user.name=Test",
+      "commit",
+      "-q",
+      "-m",
+      "many files",
     ],
     { stdio: "ignore" },
   );
@@ -307,7 +318,10 @@ describe("formatSearch", () => {
 
     assert.match(text, /^<search project="demo" ref="main" commit="a{40}" query="hello"/);
     assert.match(text, /count="3" files="2" synced_at="2026-10-18T09:00:00.000Z"/);
-    assert.match(text, /\nsrc\/a\.ts\n {2}1: const hello = 1;\n {2}9: log\("hello"\)\nsrc\/b\.tsx\n {2}4: \{hello\}\n<\/search>$/);
+    assert.match(
+      text,
+      /\nsrc\/a\.ts\n {2}1: const hello = 1;\n {2}9: log\("hello"\)\nsrc\/b\.tsx\n {2}4: \{hello\}\n<\/search>$/,
+    );
   });
 
   it("says so when nothing matched, and when the age is unknown", () => {
@@ -348,7 +362,12 @@ describe("formatSearch", () => {
 
   it("carries the flags that changed the match, and a failed refresh", () => {
     const text = formatSearch(
-      searchResult({ regex: true, caseSensitive: true, path: "src", refreshError: "token rejected" }),
+      searchResult({
+        regex: true,
+        caseSensitive: true,
+        path: "src",
+        refreshError: "token rejected",
+      }),
     );
     assert.match(text, /regex="true" case_sensitive="true" path="src"/);
     assert.match(text, /refresh_failed="true"/);
@@ -451,7 +470,10 @@ describe("formatSearch", () => {
     );
 
     assert.match(text, /context="1"/);
-    assert.match(text, /\nsrc\/a\.ts\n {2}1: header\n> 2: alpha one\n {2}3: tail\n {2}…\n> 9: alpha two\n/);
+    assert.match(
+      text,
+      /\nsrc\/a\.ts\n {2}1: header\n> 2: alpha one\n {2}3: tail\n {2}…\n> 9: alpha two\n/,
+    );
   });
 
   it("falls back to the match rows when a file has no context, and says why", () => {
@@ -504,7 +526,10 @@ describe("formatPickaxe", () => {
         syncedAt: new Date("2026-10-18T09:00:00.000Z"),
       }),
     );
-    assert.match(rows, /^<pickaxe project="demo" ref="main" commit="a{40}" query="hello" count="1"/);
+    assert.match(
+      rows,
+      /^<pickaxe project="demo" ref="main" commit="a{40}" query="hello" count="1"/,
+    );
     assert.match(rows, /\nabc1234def\t2026-10-18\tIgor\tadd it\n<\/pickaxe>$/);
 
     const empty = formatPickaxe(pickaxeResult());
@@ -521,7 +546,10 @@ describe("formatPickaxe", () => {
     );
     assert.match(text, /truncated="true"/);
     assert.match(text, /case_sensitive="true"/);
-    assert.match(text, /\[truncated: showing the most recent 1 commits; raise "limit" for older ones\]/);
+    assert.match(
+      text,
+      /\[truncated: showing the most recent 1 commits; raise "limit" for older ones\]/,
+    );
   });
 
   it("does not tell the reader to raise a limit that was not the cause", () => {
@@ -620,12 +648,21 @@ describe("search over a fixture", () => {
     });
     assert.equal(globMagic.total, 2);
 
-    const nothing = await store.search("demo", "export const", { ref: "fix/TEST-1", path: "no/such/dir" });
+    const nothing = await store.search("demo", "export const", {
+      ref: "fix/TEST-1",
+      path: "no/such/dir",
+    });
     assert.equal(nothing.total, 0);
   });
 
   it("accepts a query that starts with a dash", async () => {
-    commitOnBranch(fixture.work, "main", "src/flags.ts", "run('--dry-run');\n", "add a dashed flag");
+    commitOnBranch(
+      fixture.work,
+      "main",
+      "src/flags.ts",
+      "run('--dry-run');\n",
+      "add a dashed flag",
+    );
     await store.syncRepo("demo");
 
     const result = await store.search("demo", "--dry-run");
@@ -667,10 +704,17 @@ describe("search over a fixture", () => {
 
   it("searches a registered clone, including a branch only its remote has", async () => {
     const clone = path.join(fixture.root, "local-clone");
-    execFileSync("git", ["clone", "-q", fixture.server, clone], { stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync("git", ["clone", "-q", fixture.server, clone], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     // Published after the clone was made, so the clone holds it only as
     // `refs/remotes/origin/…` and the read has to fetch to find it.
-    publishBranchFromElsewhere(fixture.server, "feat/REMOTE-ONLY", "remote.txt", "remoteOnlyMarker\n");
+    publishBranchFromElsewhere(
+      fixture.server,
+      "feat/REMOTE-ONLY",
+      "remote.txt",
+      "remoteOnlyMarker\n",
+    );
 
     await store.addRepo("demo", clone);
     try {
@@ -687,8 +731,14 @@ describe("search over a fixture", () => {
 describe("search output modes over a fixture", () => {
   it("answers files and count without a matched line, and agrees with matches", async () => {
     const matchesMode = await store.search("demo", "export const", { ref: "fix/TEST-1" });
-    const filesMode = await store.search("demo", "export const", { ref: "fix/TEST-1", output: "files" });
-    const countMode = await store.search("demo", "export const", { ref: "fix/TEST-1", output: "count" });
+    const filesMode = await store.search("demo", "export const", {
+      ref: "fix/TEST-1",
+      output: "files",
+    });
+    const countMode = await store.search("demo", "export const", {
+      ref: "fix/TEST-1",
+      output: "count",
+    });
 
     assert.equal(matchesMode.output, "matches");
     assert.equal(filesMode.output, "files");
@@ -708,10 +758,10 @@ describe("search output modes over a fixture", () => {
       matchesMode.total,
       "-c counts matching lines, which is what a match list shows one row per",
     );
-    assert.deepEqual(matchesMode.matches.map((match) => match.path), [
-      "src/components/Button.tsx",
-      "src/index.tsx",
-    ]);
+    assert.deepEqual(
+      matchesMode.matches.map((match) => match.path),
+      ["src/components/Button.tsx", "src/index.tsx"],
+    );
   });
 
   it("caps the rows it shows while the totals stay exact", async () => {
@@ -763,7 +813,10 @@ describe("match context over a fixture", () => {
     assert.equal(result.context?.radius, 1);
 
     const file = result.context?.files.find((entry) => entry.path === "ctx.txt");
-    assert.deepEqual(file?.lines.map((line) => line.line), [1, 2, 3, 4, 9, 10, 11, 14, 15]);
+    assert.deepEqual(
+      file?.lines.map((line) => line.line),
+      [1, 2, 3, 4, 9, 10, 11, 14, 15],
+    );
     assert.deepEqual(
       file?.lines.filter((line) => line.matched).map((line) => line.line),
       [2, 3, 10, 15],
@@ -775,9 +828,10 @@ describe("match context over a fixture", () => {
     const result = await store.search("demo", "alpha", { ref: "feat/CONTEXT", context: 2 });
     const file = result.context?.files.find((entry) => entry.path === "ctx.txt");
     // [1..5] from the run, then [8..12] and [13..15] are one hunk because they touch.
-    assert.deepEqual(file?.lines.map((line) => line.line), [
-      1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15,
-    ]);
+    assert.deepEqual(
+      file?.lines.map((line) => line.line),
+      [1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15],
+    );
   });
 
   it("stops reading after the context budget and says which files got no context", async () => {
@@ -833,7 +887,13 @@ describe("pickaxe over a fixture", () => {
 
   it("caps the history walk, reports it, and follows a path", async () => {
     commitOnBranch(fixture.work, "main", "src/a.ts", "export const tokenX = 1;\n", "add tokenX");
-    commitOnBranch(fixture.work, "main", "src/b.ts", "export const tokenX = 2;\n", "use tokenX again");
+    commitOnBranch(
+      fixture.work,
+      "main",
+      "src/b.ts",
+      "export const tokenX = 2;\n",
+      "use tokenX again",
+    );
     await store.syncRepo("demo");
 
     const all = await store.pickaxe("demo", "tokenX");
@@ -856,13 +916,7 @@ describe("pickaxe over a fixture", () => {
   });
 
   it("rejects an empty query", async () => {
-    await assert.rejects(
-      () => store.search("demo", "   "),
-      /query must not be empty/,
-    );
-    await assert.rejects(
-      () => store.pickaxe("demo", ""),
-      /query must not be empty/,
-    );
+    await assert.rejects(() => store.search("demo", "   "), /query must not be empty/);
+    await assert.rejects(() => store.pickaxe("demo", ""), /query must not be empty/);
   });
 });

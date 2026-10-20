@@ -49,8 +49,18 @@ function statusOf(work: string): string {
 function commitIn(work: string, message: string): void {
   execFileSync(
     "git",
-    ["-C", work, "-c", "user.email=test@example.com", "-c", "user.name=Test",
-      "commit", "-q", "-m", message],
+    [
+      "-C",
+      work,
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "user.name=Test",
+      "commit",
+      "-q",
+      "-m",
+      message,
+    ],
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   );
 }
@@ -324,10 +334,7 @@ describe("add_repo and remove_repo", () => {
       git,
     );
 
-    await assert.rejects(
-      () => sources.removeMirror("demo", fixture.work),
-      /Refusing to delete/,
-    );
+    await assert.rejects(() => sources.removeMirror("demo", fixture.work), /Refusing to delete/);
     assert.equal(fs.existsSync(fixture.work), true, "the clone must still be there");
   });
 });

@@ -216,7 +216,10 @@ export class SourceManager {
     if (result.code !== 0) {
       return undefined;
     }
-    const remotes = result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const remotes = result.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
     if (remotes.includes("origin")) {
       return "origin";
     }

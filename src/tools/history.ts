@@ -223,7 +223,8 @@ export function formatBlame(result: BlameResult): string {
 
   let footer = "";
   if (result.outputTruncated) {
-    footer += "\n[truncated: the blame output was cut at the size limit, so later lines are missing]";
+    footer +=
+      "\n[truncated: the blame output was cut at the size limit, so later lines are missing]";
   } else if (result.truncated) {
     footer += `\n[truncated: showing the first ${shown} lines; raise "max_lines" for more]`;
   }
@@ -231,7 +232,8 @@ export function formatBlame(result: BlameResult): string {
     result.lines &&
     result.lines.availableFrom !== undefined &&
     result.lines.availableTo !== undefined &&
-    (result.lines.availableFrom !== result.lines.from || result.lines.availableTo !== result.lines.to)
+    (result.lines.availableFrom !== result.lines.from ||
+      result.lines.availableTo !== result.lines.to)
   ) {
     footer +=
       `\n[lines ${result.lines.from}-${result.lines.to} were asked for; the file has ` +
@@ -434,7 +436,7 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
         "the files it changed with git's status letter (`A`, `M`, `D`, `R091 old -> new`) and their " +
         "line counts, or `binary`. `rev` accepts a full or abbreviated sha, or a branch or tag. " +
         "`patch: true` appends the unified diff, capped by `max_bytes`. " +
-        "A merge commit reports `merge=\"true\"` and no file list, because git shows no diff for a " +
+        'A merge commit reports `merge="true"` and no file list, because git shows no diff for a ' +
         "merge by default: compare a parent with the commit to see what it brought in. " +
         "The result states the `commit` it resolved `rev` to and `synced_at`. " +
         "Give either `url` — a GitLab `/-/commit/<sha>` link — or `rev`; the link's host must be " +
@@ -501,7 +503,7 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
         // A resolved link already holds the revision it points at; the ref it
         // split out is the fallback that carries an unresolved rev into the
         // store's close-match message rather than a complaint here.
-        const useRev = fromUrl ? fromUrl.commit ?? fromUrl.ref : rev;
+        const useRev = fromUrl ? (fromUrl.commit ?? fromUrl.ref) : rev;
         if (!useRev) {
           return errorResult("Provide `url`, or `rev`.");
         }
@@ -530,7 +532,7 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
         "Show who last touched each line of a file at a branch, tag, or commit — `git blame --porcelain` " +
         "— without a working tree. Lines are grouped into runs from the same commit: a row is " +
         "`commit`, author, date, line range, then the lines themselves, numbered. " +
-        "`lines` narrows the blame to a range (`\"118-126\"`, or `\"118\"`), and a range past the end is " +
+        '`lines` narrows the blame to a range (`"118-126"`, or `"118"`), and a range past the end is ' +
         "clamped and reported rather than treated as an error. `max_lines` caps how many lines come back. " +
         "The ref defaults to the repository's default branch, and the result states the `commit` it " +
         "blamed and `synced_at`. A binary file is refused: git blames one, but its lines carry NUL bytes. " +
@@ -654,7 +656,7 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
         "Summarise what changed on `to` since it split from `from` — `git diff <merge-base> <to>` — as one row " +
         "per file: git's status letter (`A`, `M`, `D`, `R091 old -> new`) and ± counts, or `binary`. The " +
         "`merge_base` is printed, so which diff ran is never hidden; `merge_base: false` asks for the raw two-dot " +
-        "diff instead, and when the two refs share no history the two-dot diff runs with `merge_base=\"none\"`. " +
+        'diff instead, and when the two refs share no history the two-dot diff runs with `merge_base="none"`. ' +
         "This never returns a patch — a branch diff is unbounded — so the file list is capped by `max_files` and a " +
         "capped answer says so. Use `diff_file` for one file's patch, passing a printed `merge_base` as `from` for " +
         "the branch view of it. `path` is a git pathspec, and it narrows rename detection with it: a rename can " +
@@ -739,7 +741,7 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
         "diff. Scoping by path narrows rename detection, so a renamed file is read as an added (or deleted) file. " +
         "The two refs are a raw two-dot diff: pass a `merge_base` printed by `compare` as `from` for the " +
         "branch view of one file. A file that is unchanged between the refs yields no diff, and one absent from " +
-        "both is reported as not found. A binary file is refused: git has only a \"Binary files … differ\" line " +
+        'both is reported as not found. A binary file is refused: git has only a "Binary files … differ" line ' +
         "for it, which is not a patch.",
       inputSchema: {
         path: z.string().describe("File path from the repository root, e.g. 'src/index.tsx'."),
@@ -796,9 +798,7 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
         if (error instanceof NotFoundError) {
           return errorResult(error.message);
         }
-        return errorResult(
-          `Failed to diff "${path}" in "${target}".\n${failureMessage(error)}`,
-        );
+        return errorResult(`Failed to diff "${path}" in "${target}".\n${failureMessage(error)}`);
       }
     },
   );

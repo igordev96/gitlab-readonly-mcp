@@ -300,14 +300,16 @@ export function registerSearchTools(server: McpServer, store: RepoStore, config:
       title: "Find commits that changed a string",
       description:
         "Find the commits whose diff changed how often a piece of text appears — `git log -S` — so you " +
-        "can answer \"when was this introduced, and by whom?\". Each row is `commit`, `date`, `author`, " +
+        'can answer "when was this introduced, and by whom?". Each row is `commit`, `date`, `author`, ' +
         "subject, most recent first. The text is matched literally and case-insensitively, as `search` " +
-        "matches it, so a pickaxe never reports \"nothing changed\" about text the caller can see. " +
+        'matches it, so a pickaxe never reports "nothing changed" about text the caller can see. ' +
         "Unlike `search` this walks the history of the ref and is therefore slower; pair it with " +
-        "`search` to go from \"where is it\" to \"when did it appear\". " +
+        '`search` to go from "where is it" to "when did it appear". ' +
         "The ref defaults to the repository's default branch, and `path` is a git pathspec.",
       inputSchema: {
-        query: z.string().describe("Exact text to follow through history, e.g. 'orderTotals'."),
+        query: z
+          .string()
+          .describe("Exact text to follow through history, e.g. 'orderTotals'."),
         project: z
           .string()
           .optional()
@@ -317,7 +319,9 @@ export function registerSearchTools(server: McpServer, store: RepoStore, config:
         ref: z
           .string()
           .optional()
-          .describe("Branch, tag, or commit whose history to walk. Defaults to the default branch."),
+          .describe(
+            "Branch, tag, or commit whose history to walk. Defaults to the default branch.",
+          ),
         path: z
           .string()
           .optional()
@@ -325,7 +329,9 @@ export function registerSearchTools(server: McpServer, store: RepoStore, config:
         case_sensitive: z
           .boolean()
           .optional()
-          .describe("Follow the text case-sensitively. Default false: history is followed by case too."),
+          .describe(
+            "Follow the text case-sensitively. Default false: history is followed by case too.",
+          ),
         limit: z
           .number()
           .int()

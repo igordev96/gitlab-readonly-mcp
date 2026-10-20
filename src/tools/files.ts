@@ -97,7 +97,8 @@ export function conflictingProject(
   return `The URL names "${named}", but project="${project}" was given; pass one or the other.`;
 }
 
-export function registerFileTools(server: McpServer, store: RepoStore, config: Config): void {  server.registerTool(
+export function registerFileTools(server: McpServer, store: RepoStore, config: Config): void {
+  server.registerTool(
     "get_file",
     {
       title: "Read a file at a specific ref",
@@ -204,9 +205,7 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
           .filter((value): value is string => value !== undefined)
           .join(" ");
 
-        const body = result.lines
-          ? formatRangeBody(result.lines, result.content)
-          : result.content;
+        const body = result.lines ? formatRangeBody(result.lines, result.content) : result.content;
 
         // A ranged read goes to the hard cap rather than the caller's, so the note
         // has to name the limit that actually applied.
@@ -228,9 +227,7 @@ export function registerFileTools(server: McpServer, store: RepoStore, config: C
         if (asked) {
           return errorResult(`Failed to read "${asked}".\n${failureMessage(error)}`);
         }
-        return errorResult(
-          `Failed to read "${filePath}" at "${ref}".\n${failureMessage(error)}`,
-        );
+        return errorResult(`Failed to read "${filePath}" at "${ref}".\n${failureMessage(error)}`);
       }
     },
   );

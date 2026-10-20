@@ -253,7 +253,9 @@ describe("formatTree", () => {
       commit: "a".repeat(40),
       path: "",
       recursive: false,
-      entries: [{ path: "README.md", type: "blob", mode: "100644", object: "c".repeat(40), size: 12 }],
+      entries: [
+        { path: "README.md", type: "blob", mode: "100644", object: "c".repeat(40), size: 12 },
+      ],
       total: 1,
       truncated: false,
       syncedAt: new Date("2026-10-18T00:00:00.000Z"),

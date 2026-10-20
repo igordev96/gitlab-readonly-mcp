@@ -24,7 +24,14 @@ import {
   type DiffFileResult,
   type LogResult,
 } from "../src/repoStore.js";
-import { formatBlame, formatCommit, formatCompare, formatDiffFile, formatLog, parseLineSpec } from "../src/tools/history.js";
+import {
+  formatBlame,
+  formatCommit,
+  formatCompare,
+  formatDiffFile,
+  formatLog,
+  parseLineSpec,
+} from "../src/tools/history.js";
 import {
   addBranchWithFile,
   addMergedBranch,
@@ -50,8 +57,17 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
 }
 
 // Enough lines for git to call it a rename rather than a delete plus an add.
-const manyLines = Array.from({ length: 8 }, (_, index) => `export const line${index + 1} = ${index + 1};`);
-addBranchWithFile(fixture.work, "feat/RENAME", "src/many.ts", `${manyLines.join("\n")}\n`, "add many-line file");
+const manyLines = Array.from(
+  { length: 8 },
+  (_, index) => `export const line${index + 1} = ${index + 1};`,
+);
+addBranchWithFile(
+  fixture.work,
+  "feat/RENAME",
+  "src/many.ts",
+  `${manyLines.join("\n")}\n`,
+  "add many-line file",
+);
 renameOnBranch(
   fixture.work,
   "feat/RENAME",
@@ -60,13 +76,34 @@ renameOnBranch(
   `${[...manyLines.slice(0, 4), "export const line5 = 'changed';", ...manyLines.slice(5)].join("\n")}\n`,
   "rename many-line file",
 );
-addBranchWithFile(fixture.work, "feat/BINARY", "assets/logo.bin", "A\u0000B\u0001\n", "add binary asset");
-addMergedBranch(fixture.work, "feat/MERGE", "src/merged.ts", "export const merged = true;\n", "merge feat/MERGE");
+addBranchWithFile(
+  fixture.work,
+  "feat/BINARY",
+  "assets/logo.bin",
+  "A\u0000B\u0001\n",
+  "add binary asset",
+);
+addMergedBranch(
+  fixture.work,
+  "feat/MERGE",
+  "src/merged.ts",
+  "export const merged = true;\n",
+  "merge feat/MERGE",
+);
 
 // A file edited in the middle, so `diff_file`'s context width has something to
 // show and something to hide.
-const tenRows = Array.from({ length: 10 }, (_, index) => `export const row${index + 1} = ${index + 1};`);
-addBranchWithFile(fixture.work, "feat/CTX", "src/context.ts", `${tenRows.join("\n")}\n`, "add context file");
+const tenRows = Array.from(
+  { length: 10 },
+  (_, index) => `export const row${index + 1} = ${index + 1};`,
+);
+addBranchWithFile(
+  fixture.work,
+  "feat/CTX",
+  "src/context.ts",
+  `${tenRows.join("\n")}\n`,
+  "add context file",
+);
 commitOnBranch(
   fixture.work,
   "feat/CTX",
@@ -231,7 +268,14 @@ describe("history parsers", () => {
     const output =
       record([sha1, "aaaaaaa", "", "Ana", "2026-01-02T03:04:05+01:00", "one\twith\ttabs"]) +
       "\u0000" +
-      record([sha2, "bbbbbbb", `${sha1} ${"c".repeat(40)}`, "Bo", "2026-01-01T00:00:00Z", "sub\u001fject"]) +
+      record([
+        sha2,
+        "bbbbbbb",
+        `${sha1} ${"c".repeat(40)}`,
+        "Bo",
+        "2026-01-01T00:00:00Z",
+        "sub\u001fject",
+      ]) +
       "\u0000";
     const entries = parseLogEntries(output);
     assert.equal(entries.length, 2);
@@ -243,7 +287,9 @@ describe("history parsers", () => {
   });
 
   it("drops a log record the byte cap tore", () => {
-    const output = record([sha1, "aaaaaaa", "", "Ana", "2026-01-02T03:04:05+01:00", "complete"]) + "\u0000" +
+    const output =
+      record([sha1, "aaaaaaa", "", "Ana", "2026-01-02T03:04:05+01:00", "complete"]) +
+      "\u0000" +
       record([sha2, "bbbbbbb", "", "Bo", "2026-01-01T00:00:00Z", "torn"]).slice(0, -1);
     const entries = parseLogEntries(output);
     assert.deepEqual(
@@ -279,10 +325,17 @@ describe("history parsers", () => {
   });
 
   it("parses commit metadata with a multi-line message", () => {
-    const output =
-      [sha1, "p".repeat(40), "Ana", "ana@example.com", "2026-01-02T03:04:05+01:00",
-        "Ana", "ana@example.com", "2026-01-02T03:04:05+01:00",
-        "Subject\n\nbody with \u001f inside\n"].join("\u001f");
+    const output = [
+      sha1,
+      "p".repeat(40),
+      "Ana",
+      "ana@example.com",
+      "2026-01-02T03:04:05+01:00",
+      "Ana",
+      "ana@example.com",
+      "2026-01-02T03:04:05+01:00",
+      "Subject\n\nbody with \u001f inside\n",
+    ].join("\u001f");
     const parsed = parseCommitMetadata(output);
     assert.equal(parsed?.commit, sha1);
     assert.deepEqual(parsed?.parents, ["p".repeat(40)]);
@@ -319,8 +372,14 @@ describe("history rendering", () => {
 
   it("renders rows, the merge marker and a capped footer", () => {
     const text = formatLog(logResult);
-    assert.match(text, /^<log project="demo" ref="fix\/TEST-1" commit="a{40}" path="src\/index\.tsx" count="1"/);
-    assert.match(text, /\naaaaaaaaaaaa\t2026-01-02T03:04:05\+01:00\tAna\tchange with tab\t\(merge\)\n/);
+    assert.match(
+      text,
+      /^<log project="demo" ref="fix\/TEST-1" commit="a{40}" path="src\/index\.tsx" count="1"/,
+    );
+    assert.match(
+      text,
+      /\naaaaaaaaaaaa\t2026-01-02T03:04:05\+01:00\tAna\tchange with tab\t\(merge\)\n/,
+    );
     assert.match(text, /\[truncated: showing the most recent 1 commits/);
     assert.match(text, /truncated="true"/);
   });
@@ -340,7 +399,14 @@ describe("history rendering", () => {
     merge: false,
     files: [
       { status: "M", path: "src/a.ts", additions: 2, deletions: 1, binary: false },
-      { status: "R091", path: "src/new.ts", oldPath: "src/old.ts", additions: 1, deletions: 1, binary: false },
+      {
+        status: "R091",
+        path: "src/new.ts",
+        oldPath: "src/old.ts",
+        additions: 1,
+        deletions: 1,
+        binary: false,
+      },
       { status: "A", path: "assets/logo.bin", binary: true },
     ],
     additions: 3,
@@ -401,7 +467,10 @@ describe("blame", () => {
     assert.equal(result.groups.length, 1);
     assert.equal(result.groups[0]?.commit, result.commit);
     assert.equal(result.groups[0]?.author, "Test");
-    assert.match(result.groups[0]?.date ?? "", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+    assert.match(
+      result.groups[0]?.date ?? "",
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/,
+    );
     assert.equal(result.groups[0]?.lines[0]?.text, "export const hello = 'fix/TEST-1';");
     assert.equal(result.truncated, false);
   });
@@ -490,10 +559,7 @@ describe("blame", () => {
   });
 
   it("reports a missing path and a missing ref as NotFoundError", async () => {
-    await assert.rejects(
-      store.blame("demo", "src/nope.ts", { ref: "fix/TEST-1" }),
-      NotFoundError,
-    );
+    await assert.rejects(store.blame("demo", "src/nope.ts", { ref: "fix/TEST-1" }), NotFoundError);
     await assert.rejects(
       store.blame("demo", "src/index.tsx", { ref: "no/such-branch" }),
       NotFoundError,
@@ -730,7 +796,9 @@ describe("compare", () => {
   it("names whichever ref is missing", async () => {
     await assert.rejects(store.compare("demo", "no/such", "main"), NotFoundError);
     await assert.rejects(store.compare("demo", "main", "no/such"), NotFoundError);
-    const error = (await store.compare("demo", "main", "no/such").catch((thrown) => thrown)) as Error;
+    const error = (await store
+      .compare("demo", "main", "no/such")
+      .catch((thrown) => thrown)) as Error;
     assert.match(error.message, /"no\/such"/);
   });
 });
@@ -745,13 +813,18 @@ describe("diff_file", () => {
     assert.equal(result.binary, false);
     assert.equal(result.truncated, false);
     assert.match(result.patch, /^diff --git a\/src\/index\.tsx b\/src\/index\.tsx\n/);
-    assert.match(result.patch, /\n-export const hello = 'main';\n\+export const hello = 'fix\/TEST-1';\n$/);
+    assert.match(
+      result.patch,
+      /\n-export const hello = 'main';\n\+export const hello = 'fix\/TEST-1';\n$/,
+    );
   });
 
   it("honours the context width, and clamps it at ten", async () => {
     const parent = (await store.getCommit("demo", "feat/CTX")).parents[0] ?? "";
     const wide = await store.diffFile("demo", "src/context.ts", parent, "feat/CTX");
-    const tight = await store.diffFile("demo", "src/context.ts", parent, "feat/CTX", { context: 0 });
+    const tight = await store.diffFile("demo", "src/context.ts", parent, "feat/CTX", {
+      context: 0,
+    });
     assert.equal(wide.context, 3);
     assert.equal(tight.context, 0);
     assert.match(wide.patch, /^ export const row4 = 4;$/m, "three lines of context are shown");
@@ -857,7 +930,11 @@ describe("compare and diff_file rendering", () => {
     assert.match(twoDot, /merge_base="off"/);
     assert.doesNotMatch(twoDot, /no merge base/);
 
-    const unrelated = formatCompare({ ...baseCompare, mergeBase: undefined, mergeBaseMissing: true });
+    const unrelated = formatCompare({
+      ...baseCompare,
+      mergeBase: undefined,
+      mergeBaseMissing: true,
+    });
     assert.match(unrelated, /merge_base="none"/);
     assert.match(
       unrelated,

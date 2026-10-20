@@ -25,9 +25,7 @@ function repo(overrides: Partial<Summary> = {}): Summary {
 
 describe("formatRepoList", () => {
   it("renders one row per project with its policy and sync time", () => {
-    const text = formatRepoList(
-      listing(repo({ syncedAt: new Date("2026-10-18T18:08:50.095Z") })),
-    );
+    const text = formatRepoList(listing(repo({ syncedAt: new Date("2026-10-18T18:08:50.095Z") })));
 
     assert.match(text, /^<repos count="1">/);
     assert.match(
@@ -45,9 +43,7 @@ describe("formatRepoList", () => {
   });
 
   it("names the clone a local registration points at", () => {
-    const text = formatRepoList(
-      listing(repo({ source: "local", localPath: "C:/work/repo" })),
-    );
+    const text = formatRepoList(listing(repo({ source: "local", localPath: "C:/work/repo" })));
     assert.match(text, /source=local/);
     assert.match(text, /local_path=C:\/work\/repo/);
   });

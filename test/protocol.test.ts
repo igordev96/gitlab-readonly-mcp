@@ -269,7 +269,10 @@ describe("MCP protocol", () => {
       textOf(patch),
       /<diff project="demo" path="src\/index\.tsx" from="main" to="fix\/TEST-1"/,
     );
-    assert.match(textOf(patch), /\n-export const hello = 'main';\n\+export const hello = 'fix\/TEST-1';\n/);
+    assert.match(
+      textOf(patch),
+      /\n-export const hello = 'main';\n\+export const hello = 'fix\/TEST-1';\n/,
+    );
   });
 
   it("exposes parse_gitlab_url, and reads through a pasted link", async () => {
@@ -507,10 +510,7 @@ describe("MCP protocol", () => {
     assert.match(addedText, /nothing was fetched/);
 
     const listed = await client.callTool({ name: "list_repos", arguments: {} });
-    assert.match(
-      textOf(listed),
-      /cloned\tsource=local\tfreshness=ttl\tttl=600s\tpresent=true/,
-    );
+    assert.match(textOf(listed), /cloned\tsource=local\tfreshness=ttl\tttl=600s\tpresent=true/);
 
     const read = await client.callTool({
       name: "get_file",

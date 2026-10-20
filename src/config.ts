@@ -37,9 +37,7 @@ function stripTrailingSlashes(value: string): string {
 
 function defaultCacheDir(): string {
   const base =
-    process.env.LOCALAPPDATA ??
-    process.env.XDG_CACHE_HOME ??
-    path.join(os.homedir(), ".cache");
+    process.env.LOCALAPPDATA ?? process.env.XDG_CACHE_HOME ?? path.join(os.homedir(), ".cache");
   return path.join(base, "gitlab-readonly-mcp");
 }
 
@@ -52,9 +50,7 @@ function defaultCacheDir(): string {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const host = stripTrailingSlashes((env.GITLAB_HOST ?? "").trim());
   if (!host) {
-    throw new Error(
-      "GITLAB_HOST is required (e.g. https://gitlab.example.com).",
-    );
+    throw new Error("GITLAB_HOST is required (e.g. https://gitlab.example.com).");
   }
   if (!/^https?:\/\//i.test(host)) {
     throw new Error(`GITLAB_HOST must start with http:// or https:// (got "${host}").`);
@@ -75,9 +71,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   const rawMode = (env.GITLAB_FETCH_MODE ?? "ttl").trim().toLowerCase();
   if (rawMode !== "ttl" && rawMode !== "always" && rawMode !== "manual") {
-    throw new Error(
-      `GITLAB_FETCH_MODE must be "ttl", "always" or "manual" (got "${rawMode}").`,
-    );
+    throw new Error(`GITLAB_FETCH_MODE must be "ttl", "always" or "manual" (got "${rawMode}").`);
   }
 
   const rawTtl = (env.GITLAB_FETCH_TTL_SECONDS ?? String(DEFAULT_FETCH_TTL_SECONDS)).trim();
