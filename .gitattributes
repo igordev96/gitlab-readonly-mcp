@@ -15,3 +15,4 @@
 .git-blame-ignore-revs text eol=lf
 .gitignore             text eol=lf
 .nvmrc                 text eol=lf
+LICENSE text eol=lf
