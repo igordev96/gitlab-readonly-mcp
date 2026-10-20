@@ -1,5 +1,7 @@
 # gitlab-readonly-mcp
 
+[![CI](https://github.com/igordev96/gitlab-readonly-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/igordev96/gitlab-readonly-mcp/actions/workflows/ci.yml)
+
 A small, read-only, **git-backed** MCP server for a self-managed GitLab.
 
 It lets an AI agent read files from **any branch, tag, or commit** — including
