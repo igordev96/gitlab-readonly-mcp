@@ -707,12 +707,12 @@ worth asking today — the server is developed and run on one OS, and Node 26 is
 week from LTS rather than a version anyone has used. Add either when there is a
 reason: a second machine in use, or a bug that reproduces away from Windows.
 
-`check:pack` is the part that earns the file. It is the only check that looks at
-what somebody installing this actually receives, and it cannot rot quietly: it
-either finds `dist/index.js` in the tarball or it does not. It needs
-`files: ["dist"]` in `package.json` first — without that field npm falls back
-to `.gitignore`, which lists `dist/`, so the tarball would omit the entry point.
-The script lands first and is watched failing, then the field makes it pass; a
+`check:pack` is the part that earns the file. It asserts the shape of the
+tarball: `dist/` plus the metadata npm always adds, and nothing else. It needs
+`files: ["dist"]` in `package.json` first — without that field npm 11.19 packed
+79 files, and `dist/index.js` was among them, so the entry point was never the
+problem. Shipping `src/`, `test/`, `docs/` and the tool configuration was. The
+script landed first and was watched failing, then the field made it pass: a
 check that has never been red is indistinguishable from one that does nothing.
 
 Decisions rather than template defaults:

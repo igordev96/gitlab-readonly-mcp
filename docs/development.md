@@ -17,6 +17,7 @@ only the runtime.
 npm run typecheck   # src/ and test/, no emit
 npm test            # builds, then runs the whole suite
 npm run build       # tsc -> dist/
+npm run check:pack  # build, then assert the tarball is the package
 npm run dev         # run src/ directly through tsx
 npm start           # run the built dist/
 ```
