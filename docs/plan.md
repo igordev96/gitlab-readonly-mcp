@@ -669,21 +669,78 @@ Deferred deliberately, so nobody re-litigates it by accident:
 
 - **Commit hooks** (husky, lint-staged, commitlint). A hook is a commit-time
   gate that `--no-verify` bypasses and that a fresh clone does not have until
-  `npm install`. If one gate is wanted, CI is the better one; commitlint is the
-  only piece with standalone value, because `AGENTS.md` already requires
-  Conventional Commits.
-- **CI**, until it earns its keep. What it adds today is a second machine and a
-  second OS, not a stronger check — the same scripts run locally. The reason to
-  add it is packaging: a release job that asserts the tag matches
-  `package.json` and that the tarball actually contains `dist/`. That is where
-  it belongs.
+  `npm install`. CI is the better gate; see below.
+  commitlint is the only piece with standalone value, because `AGENTS.md`
+  already requires Conventional Commits.
 - **A registry or a published package.** `bin` plus a tarball removes the
   absolute path from every config without putting a second credential on every
   machine; a private registry adds only version resolution.
 
-No gate enforces formatting today. Until one exists, `npm run format` is
-voluntary and a reformat lands as its own commit — never inside a change that
-does something.
+No gate enforces formatting today; the CI section below is where that changes.
+Until it lands, `npm run format` is voluntary and a reformat arrives as its own
+commit — never inside a change that does something.
+
+### CI (GitHub Actions)
+
+Planned, not yet implemented. GitHub is where the repository lives, so the
+workflow is `.github/workflows/ci.yml`.
+
+One job, on `ubuntu-latest`, with the Node version read from `.nvmrc`:
+
+```powershell
+npm ci
+npm run format:check
+npm run lint
+npm run typecheck
+npm test             # builds first
+npm run check:pack   # asserts the tarball contains dist/index.js
+```
+
+That is the local gate, run on a machine that has none of the local machine's
+state: no global npm packages, no inherited git config, no cached `dist/`. What
+it buys is the clean room and the record — not a lock, since on a one-person
+repository the checks run *after* the push.
+
+Why one job rather than a matrix: breadth is not depth. A Windows leg and a
+second Node column are each a one-line change, and neither answers a question
+worth asking today — the server is developed and run on one OS, and Node 26 is a
+week from LTS rather than a version anyone has used. Add either when there is a
+reason: a second machine in use, or a bug that reproduces away from Windows.
+
+`check:pack` is the part that earns the file. It is the only check that looks at
+what somebody installing this actually receives, and it cannot rot quietly: it
+either finds `dist/index.js` in the tarball or it does not. It needs
+`files: ["dist"]` in `package.json` first — without that field npm falls back
+to `.gitignore`, which lists `dist/`, so the tarball would omit the entry point.
+The script lands first and is watched failing, then the field makes it pass; a
+check that has never been red is indistinguishable from one that does nothing.
+
+Decisions rather than template defaults:
+
+- **`permissions: contents: read`** at the top. Nothing here writes.
+- **`concurrency`** keyed on workflow and ref, `cancel-in-progress: true`, so a
+  branch's superseded run is abandoned rather than paid for.
+- **Actions by major tag** (`checkout@v7`, `setup-node@v7`), not a commit SHA: a
+  SHA pin is stricter and makes a human the only updater, while Dependabot's
+  `github-actions` ecosystem is an update path this repository will keep up
+  with.
+- **`npm ci`**, not `npm install`: it refuses when the manifest and the lockfile
+  disagree, which alone would have caught the engine bump arriving without its
+  lockfile copy.
+
+**Landing order**, two reviewable steps and one optional:
+
+1. `scripts/check-pack.mjs` plus `npm run check:pack`; red, then
+   `files: ["dist"]`; green. Runnable locally, like every other gate here.
+2. `.github/workflows/ci.yml`, whose first live run is the push that adds it.
+3. Optionally, Dependabot: `npm` weekly (the exact oxfmt and oxlint pins mean
+   updates arrive as reviewable PRs, which is the intent) and `github-actions`
+   weekly.
+
+Not in this phase: requiring the checks before merge, a tag-triggered release
+job (releases are made by hand, see *Versioning*), the Windows leg and the Node
+26 column. Each has a trigger named above, so none needs re-deciding from
+scratch.
 
 ### Versioning
 
