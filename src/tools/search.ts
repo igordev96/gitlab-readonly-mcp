@@ -307,9 +307,7 @@ export function registerSearchTools(server: McpServer, store: RepoStore, config:
         '`search` to go from "where is it" to "when did it appear". ' +
         "The ref defaults to the repository's default branch, and `path` is a git pathspec.",
       inputSchema: {
-        query: z
-          .string()
-          .describe("Exact text to follow through history, e.g. 'orderTotals'."),
+        query: z.string().describe("Exact text to follow through history, e.g. 'orderTotals'."),
         project: z
           .string()
           .optional()

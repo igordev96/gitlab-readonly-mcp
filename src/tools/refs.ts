@@ -146,9 +146,7 @@ export function registerRefTools(server: McpServer, store: RepoStore, config: Co
         "reading files from it. If the ref is missing, the error lists similar names, and it says " +
         "so when the copy could not be refreshed, since then a missing ref proves nothing.",
       inputSchema: {
-        ref: z
-          .string()
-          .describe("Branch, tag, or commit SHA, e.g. 'develop' or 'fix/PROJ-7608'."),
+        ref: z.string().describe("Branch, tag, or commit SHA, e.g. 'develop' or 'fix/PROJ-7608'."),
         project: z
           .string()
           .optional()

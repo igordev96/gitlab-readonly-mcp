@@ -670,9 +670,7 @@ export function registerHistoryTools(server: McpServer, store: RepoStore, config
           ),
         to: z
           .string()
-          .describe(
-            "The ref to compare to — whose changes are summarised, e.g. 'fix/PROJ-7608'.",
-          ),
+          .describe("The ref to compare to — whose changes are summarised, e.g. 'fix/PROJ-7608'."),
         project: z
           .string()
           .optional()
