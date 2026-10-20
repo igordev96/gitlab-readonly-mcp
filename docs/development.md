@@ -6,6 +6,13 @@ of a phase — are in [`AGENTS.md`](../AGENTS.md).
 
 ## Build and test
 
+The floor is Node 24 (`engines`), and `.nvmrc` pins 24.21.0 — the version this
+repository is developed on — so `nvm use` picks it up. The floor rose from 20 in
+October 2026 for two reasons: Node 20 reached end-of-life on 2026-04-30, and the
+lint tooling wants at least 20.19 or 22.12. The server itself needs neither; the
+tooling is what pulls the floor up, and `engines` describes the repository, not
+only the runtime.
+
 ```powershell
 npm run typecheck   # src/ and test/, no emit
 npm test            # builds, then runs the whole suite

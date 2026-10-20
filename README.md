@@ -15,7 +15,7 @@ git's strengths and, on a self-managed free tier, the REST API's weaknesses.
 
 ## Requirements
 
-- Node.js 20+ (developed on Node 24)
+- Node.js 24+ (developed on Node 24.21)
 - `git` on `PATH`
 - A GitLab token with the **`read_repository`** scope (a personal or project
   access token). Never use `api` or `write_repository`.
