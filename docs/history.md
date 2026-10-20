@@ -30,6 +30,11 @@ Phase 0 predates the first tag: it was verified by hand — mirror clone succeed
 `fix/PROJ-7608` was present, `ls-tree` listed files, and
 `git show "fix/PROJ-7608:<path>"` printed the file. See the runbook below.
 
+Tooling changes take no release, and so no row: they are recorded in the
+findings log below and in [`development.md`](development.md). The oxfmt pass of
+2026-10-20 changed no behaviour, so it has no live check either — its gate was
+`npm run typecheck`, the 325-test suite and `npm run format:check`.
+
 ---
 
 ## Findings log
@@ -132,6 +137,12 @@ Running record of things learned while building. Keep appending.
 | 2026-10-20 | **Five facts each had two to four homes** — the tool list, tool semantics, phase history, the source layout, and freshness behaviour. That duplication is why the README grew past 600 lines while saying little a user could not get elsewhere. | One owner per fact: code for semantics, README for getting started and examples, `internals.md` for behaviour, `development.md` for build/release/layout, the plan for pending design, history for evidence. The README's duplicate of each was deleted, not moved. |
 | 2026-10-20 | **"One home" has a deliberate exception: the README's six-entry glossary.** `synced_at`, `refresh_failed`, `truncated`, `ref_confirmed`, `merge_base="none"` and `(no matches)` each get one line in the README so a human can read an agent's answer, while `internals.md` explains the mechanics. The duplication grep therefore still finds `synced_at` in four files. | The four are four roles — explanation, quick reference, design decision, evidence — not four explanations. Recorded so the next run of the check does not mistake the split for drift and "fix" it by deleting the glossary. |
 | 2026-10-20 | **`Measure-Object -Line` undercounts these files.** It reported the README as 527 lines when it was 637, and `history.md` as 499 when it was 568 — it does not count the same way `(Get-Content file).Count` does. | Use the array count whenever a size is quoted. Two size claims made earlier in this work were wrong until they were rechecked. |
+| 2026-10-20 | **oxfmt is pre-1.0 (0.74.0), so a caret range is a loaded gun.** A minor bump can reformat the whole repository, and it would land inside whatever unrelated change happened to trigger it. | Pinned exactly — `"oxfmt": "0.74.0"`. A bump becomes a deliberate commit of its own, the way a release is. |
+| 2026-10-20 | **`printWidth: 80` would have cost five times the diff of 100.** Measured on copies of the tree: at 80, 28 files and 2760 lines; at 100, 20 files and 574. 911 lines already sat in the 81–100 band. | `printWidth: 100`. That band was drift, not a chosen style, and wrapping it would rewrite nine hundred lines that read fine. The measurement lives in `development.md` so the next person re-runs it rather than guessing. |
+| 2026-10-20 | **Oxfmt formats Markdown natively, and does it badly for this repository.** It pads every table cell to a uniform width (rows ran past 160 characters) and rewrote the `mcp.servers` example inside a fence, adding trailing commas and re-indenting it. | `ignorePatterns: ["**/*.md"]`. 504 of the 848 lines a full pass would have removed were docs, and none of them were wrong — the README and `docs/` are hand-wrapped at 79 columns on purpose. |
+| 2026-10-20 | **`.git-blame-ignore-revs` cannot contain the SHA of the commit that adds it**, which is the whole point of the file. | Two commits: the reformat, then the ignore file. Verified with `git blame --ignore-revs-file .git-blame-ignore-revs`: `src/config.ts:60` resolves to `77b180a6` rather than to the format commit, so blame still names the author. |
+| 2026-10-20 | **A new extension-less dotfile is not covered by the `eol=lf` rules.** `.gitattributes` matches dotfiles by name, so `.git-blame-ignore-revs` fell under `text=auto` and git warned that `core.autocrlf` would rewrite it to CRLF on the next checkout — the one line-ending drift the project takes trouble to avoid. | Listed explicitly in `.gitattributes`, beside `.editorconfig` and `.gitignore`. |
+| 2026-10-20 | **The oxc and hook tooling would raise the Node floor above what the server needs.** `oxlint` needs `^20.19` or `>=22.12`, `lint-staged` `>=22.22.1`, `@commitlint/cli` `>=22.12`; `engines` still says `>=20`, and Node 20 reached end-of-life on 2026-04-30. | Not yet changed. The floor becomes `>=24` with an exact `.nvmrc` when the toolchain work continues. Recorded here so the mismatch is not discovered by a failing install. |
 
 ---
 

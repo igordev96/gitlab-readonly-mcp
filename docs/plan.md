@@ -626,6 +626,42 @@ belongs with. There is one copy, so it cannot drift from the code's own shape.
 Stack: TypeScript, `@modelcontextprotocol/sdk`, `zod` for input schemas, Node
 child_process `spawn` (array args) for git.
 
+### Tooling
+
+`oxfmt` formats and `oxlint` lints, both as devDependencies; `tsc --noEmit`
+stays the type checker and `node:test` the test runner. Oxfmt is pinned exactly
+because it is pre-1.0: a minor bump must not be able to reformat the repository
+on its own.
+
+Two settled choices, with the evidence that settled them:
+
+- **`printWidth: 100`.** At 80 the first pass changed 2760 lines; at 100 it
+  changed 574. The 81–100 band was accumulated drift rather than a style, and
+  80 would have rewrapped nine hundred lines to punish nobody in particular.
+- **Markdown is out of scope** (`ignorePatterns: ["**/*.md"]`). Oxfmt pads table
+  cells to uniform width and rewrites config examples inside fences — churn in
+  the docs, not in the code. The docs are hand-wrapped deliberately.
+
+Deferred deliberately, so nobody re-litigates it by accident:
+
+- **Commit hooks** (husky, lint-staged, commitlint). A hook is a commit-time
+  gate that `--no-verify` bypasses and that a fresh clone does not have until
+  `npm install`. If one gate is wanted, CI is the better one; commitlint is the
+  only piece with standalone value, because `AGENTS.md` already requires
+  Conventional Commits.
+- **CI**, until it earns its keep. What it adds today is a second machine and a
+  second OS, not a stronger check — the same scripts run locally. The reason to
+  add it is packaging: a release job that asserts the tag matches
+  `package.json` and that the tarball actually contains `dist/`. That is where
+  it belongs.
+- **A registry or a published package.** `bin` plus a tarball removes the
+  absolute path from every config without putting a second credential on every
+  machine; a private registry adds only version resolution.
+
+No gate enforces formatting today. Until one exists, `npm run format` is
+voluntary and a reformat lands as its own commit — never inside a change that
+does something.
+
 ### Versioning
 
 The version the server reports to clients is read from `package.json`, and the

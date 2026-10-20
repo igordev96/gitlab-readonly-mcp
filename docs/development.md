@@ -19,6 +19,40 @@ npm start           # run the built dist/
 split is deliberate: a stale build cannot hide a failure, and the fast tests
 cannot accidentally exercise old code.
 
+## Formatting
+
+[oxfmt](../.oxfmtrc.json) formats the code; the docs are left alone. It is
+pinned exactly, at 0.74.0, because it is still pre-1.0: a minor bump must not be
+able to reformat the repository inside an unrelated change.
+
+```powershell
+npm run format        # rewrite in place
+npm run format:check  # report what a gate would reject
+```
+
+`printWidth` is **100**, and that is a measurement rather than a preference. A
+first pass at 80 changed 2760 lines across 28 files; at 100 it changed 574
+across 20. The 81–100 band was drift, not a style anyone chose, and 80 would
+have rewrapped nine hundred lines that read fine. Re-measure before changing it.
+
+Markdown is excluded with `ignorePatterns`. Oxfmt pads every table cell to a
+uniform width and rewrites the config examples inside fences — churn in the
+docs, not in the code. The README and `docs/` are hand-wrapped at 79 columns on
+purpose.
+
+Nothing enforces `format:check` yet: there is no CI and no commit hook, so
+running `npm run format` is voluntary. When a gate exists it should call the
+same script — see the tooling policy in [`plan.md`](plan.md).
+
+The reformat itself is listed in
+[`.git-blame-ignore-revs`](../.git-blame-ignore-revs), so `git blame` still
+names whoever wrote a line. Git has to be told once per clone; GitHub and GitLab
+read the file on their own.
+
+```powershell
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
 ## The test fixture
 
 Tests never touch the network or need a token. `test/fixture.ts` builds a
