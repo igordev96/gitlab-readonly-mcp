@@ -38,9 +38,9 @@ Author: OpenCode
 ## 1. Goal
 
 A personal, local (stdio) MCP server that lets an AI agent read repository
-content from **any branch/tag/commit** of a self-managed GitLab server,
-**without disturbing the developer's working tree**, plus diff and history/blame
-lookups.
+content from **any branch/tag/commit** of a GitLab server (self-managed or
+gitlab.com), **without disturbing the developer's working tree**, plus diff and
+history/blame lookups.
 
 Primary use case:
 
@@ -54,14 +54,16 @@ Secondary use cases (selected):
 
 Backend decision: **git only** (no GitLab REST API), because the selected
 features (diff + history/blame + search) are git's strengths and the REST API's
-weaknesses on self-managed/free tiers.
+weaknesses on Free tiers, self-managed or gitlab.com.
 
 ---
 
 ## 2. Background & constraints
 
-- GitLab is **self-managed at a custom host**, native GitLab MCP is unavailable
-  (disabled by admin, or instance older than 18.3).
+- GitLab (self-managed or `gitlab.com`) where the official MCP server is unavailable,
+  not enabled by an admin, or the only available token is a project access
+  token/legacy PAT (the official server requires OAuth with the `mcp` scope or a
+  fine-grained PAT with the MCP tool resource).
 - Token must be **read-only**. Scope: `read_repository` (clone/fetch) — *not*
   `api`, *not* `write_repository`.
 - Token must never be committed, logged, or stored in `.git/config`.
@@ -70,13 +72,19 @@ weaknesses on self-managed/free tiers.
 
 ### Note worth a 5-minute check
 
-As of 2026, GitLab's **official MCP server is Free tier** and supports
-Self-Managed (`Tier: Free, Premium, Ultimate`). If your instance is simply too
-old (< 18.3) an upgrade may unlock it for free; if it is a deliberate admin
-policy, your custom server is the right call. Off-the-shelf alternatives that
-work today with a PAT: `@modelcontextprotocol/server-gitlab` (small),
-`zereight/gitlab-mcp` (broad, 86 tools). We proceed with the custom server
-because you want a **small, controlled, read-only** surface.
+As of 2026, GitLab's **official MCP server is generally available** (introduced
+as an experiment in 18.3) on GitLab.com, self-managed and Dedicated across
+tiers. It accepts OAuth tokens with the `mcp` scope or fine-grained PATs with
+the MCP tool resource, but **rejects legacy PATs, project access tokens and
+group access tokens** with `403 insufficient_scope`. Instance/group enablement
+also applies, and so can rate limits when enabled (60/min on Free, 600/min on
+paid tiers; introduced in 19.5 behind feature flags, off by default).
+Off-the-shelf
+alternatives that work today with a PAT: `@modelcontextprotocol/server-gitlab`
+(small), `zereight/gitlab-mcp` (broad, 86 tools). We proceed with the custom
+server because you want a **small, controlled, read-only** surface that works
+with `read_repository` tokens (project access/legacy PATs) the official server
+refuses, with no per-request budget.
 
 ---
 
@@ -825,7 +833,7 @@ down under *Tooling*. Any of the three is a new decision, not a step.
 | Large repos / disk | A partial (`blobless`) clone was considered and **dropped in 4b**: grep, `git show` and pickaxe's patches all need blob contents, so a blobless source would fetch blobs over the network — with credentials — during a read, which is the property this server exists to avoid. The disk answer is a registered local clone. |
 | Unbounded diffs | `compare` returns a capped summary and never a patch; `diff_file` is one file at a time, with a byte cap and a context limit |
 | Token leakage | env + `http.extraheader`, never logged, read-only scope |
-| A published package widens the audience for a tool that holds a token | Read-only by construction; the token never reaches `.git/config`; §10 step 5 states the residual risks; the npm package is published with provenance |
+| A published package widens the audience for a tool that holds a token | Read-only by construction; the token never reaches `.git/config`; §10 step 5 states the residual risks; if the package is published to npm, with provenance |
 | Command injection via ref/path | array args, reject leading `-`, `--` separators |
 | Fetch stalls MCP | `GIT_TERMINAL_PROMPT=0`, per-project fetch lock, OpenCode timeouts |
 | Repo already local | Read-only; never mutate working tree |
@@ -838,8 +846,11 @@ down under *Tooling*. Any of the three is a new decision, not a step.
 - Merge request review and CI/pipeline logs — REST API features; revisit later
   behind the same server as an optional second backend.
 - Shared/multi-user hosting — would require HTTP transport and real auth.
-- Other git hosts (GitHub/Bitbucket) — git layer is host-agnostic, but nothing
-  GitLab-specific beyond the URL parser.
+- Other git hosts (GitHub/Bitbucket) — the engine is host-agnostic, but auth
+  (`oauth2:`), GitLab-specific URL shapes and naming (`GITLAB_*`/`gitlab_*`)
+  would need host-specific handling; the token-type constraint that motivates
+  this tool is primarily a GitLab concern, and GitHub/Bitbucket already have
+  strong official MCP offerings. Not planned for now.
 
 ---
 
@@ -852,9 +863,12 @@ release of its own until one of its steps changes something a user runs.
 
 **The position.** Not "a GitLab MCP server": that market is taken, and a
 narrower feature list loses to it. The position is **read-only and
-git-backed**, for the self-managed instance the official server cannot reach
-and whose admin will only issue a `read_repository` token. The README leads
-with that, so a reader can decide in fifteen seconds whether to stop reading.
+git-backed**, for the instance whose only token is a `read_repository` project
+access token or legacy PAT — the token types the official server rejects — and
+whose plan has no Advanced Search. That covers self-managed instances and
+gitlab.com alike; the official server's version floor is a third reason, not
+the first. The README leads with that, so a reader can decide in fifteen
+seconds whether to stop reading.
 
 **The steps, in order, each independently shippable:**
 

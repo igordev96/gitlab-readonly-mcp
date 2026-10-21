@@ -3,7 +3,7 @@
 [![CI](https://github.com/igordev96/gitlab-readonly-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/igordev96/gitlab-readonly-mcp/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/igordev96/gitlab-readonly-mcp?label=Release)](https://github.com/igordev96/gitlab-readonly-mcp/releases/latest)
 
-A small, read-only, **git-backed** MCP server for a self-managed GitLab.
+A small, read-only, **git-backed** MCP server for GitLab (self-managed or gitlab.com).
 
 It lets an AI agent read files from **any branch, tag, or commit** — including
 branches that are not checked out locally — without ever touching your working
@@ -23,21 +23,26 @@ and how to uninstall.
 
 **Use this when**
 
-- **your GitLab is self-managed and older than 18.3**, or an admin has not
-  enabled the official GitLab MCP server. This one talks to git rather than to
-  the REST API, so it needs none of that;
-- **the only token you can get is read-only.** `read_repository` is enough, and
-  enough is all the server could use: it has no write path to use it with;
-- **you want search, blame, pickaxe and compare on a free-tier instance.** Code
-  search through the REST API needs Advanced Search, and pickaxe has no API
-  equivalent at all; over git they cost nothing;
+- **the only token you can get is a project access token or a legacy PAT.** The
+  official GitLab MCP server rejects both (it requires OAuth with the `mcp`
+  scope or a fine-grained PAT with the MCP tool resource). This server needs
+  only `read_repository`, and has no write path to use more with;
+- **your instance has no Advanced Search** — Free, or a self-managed instance
+  where it is not configured. The REST API's code search (`blobs` scope) needs
+  it; search, blame, pickaxe and compare run over git, cost nothing, and one
+  fetch per TTL serves every read instead of an API call per tool;
+- **the official server is unavailable** — your GitLab is older than 18.3, or
+  the instance admin (on gitlab.com, a top-level group Owner) has not enabled
+  it. This server works on self-managed and gitlab.com alike, as long as the
+  repository can be cloned over HTTPS with a read-only token;
 - **you need a branch that is not checked out**, or a file from a commit that
   never reached your machine, without disturbing the working tree you have.
 
 **Not this when**
 
-- **your instance is 18.3 or newer and the official server is enabled.** It
-  covers more, and it is the better first choice;
+- **you can use the official GitLab MCP server and want its full feature set.**
+  It covers more, and it is the better first choice if your token and
+  permissions allow it;
 - **the agent has to change something** — write a file, comment, open a merge
   request. This server is read-only, on purpose;
 - **you need merge requests, issues, pipelines or CI logs.** It reads version
@@ -63,7 +68,7 @@ and how to uninstall.
 ## Why git instead of the GitLab REST API?
 
 Reading a file at a ref, comparing branches, history, blame and code search are
-git's strengths and, on a self-managed free tier, the REST API's weaknesses.
+git's strengths and, without Advanced Search, the REST API's weaknesses.
 [How it works](docs/internals.md) has the longer answer.
 
 ## Requirements
@@ -123,8 +128,8 @@ All configuration is via environment variables.
 
 | Variable | Required | Description |
 |---|---|---|
-| `GITLAB_HOST` | yes | Base URL of the instance, e.g. `https://gitlab.example.com` (no trailing slash). |
-| `GITLAB_TOKEN` | yes | Read-only token (`read_repository`). Injected per git call via `http.extraheader`; never written to `.git/config`. |
+| `GITLAB_HOST` | yes | Base URL of the instance, e.g. `https://gitlab.example.com` or `https://gitlab.com` (no trailing slash). Project paths are not unique per instance, so the host must be explicit. |
+| `GITLAB_TOKEN` | yes | Read-only token (`read_repository`). Works with project access tokens and legacy PATs that the official GitLab MCP server rejects. Injected per git call via `http.extraheader`; never written to `.git/config`. |
 | `GITLAB_DEFAULT_PROJECT` | no | Project path used when a tool call omits `project`, e.g. `group/subgroup/repo`. |
 | `GITLAB_MCP_CACHE` | no | Cache root for mirrors. Defaults to `%LOCALAPPDATA%\gitlab-readonly-mcp` (or `~/.cache/...` elsewhere). |
 | `GITLAB_CA_INFO` | no | Path to a CA bundle, if the server uses a private CA. |

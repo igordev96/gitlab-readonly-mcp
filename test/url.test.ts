@@ -61,6 +61,18 @@ describe("parseGitlabUrl", () => {
     assert.equal(parsed.lines, undefined);
   });
 
+  it("accepts gitlab.com when GITLAB_HOST names gitlab.com", () => {
+    const parsed = parseGitlabUrl(
+      "https://gitlab.com/gitlab-org/gitlab/-/blob/master/README.md#L1-5",
+      "https://gitlab.com",
+    );
+    assert.equal(parsed.host, "gitlab.com");
+    assert.equal(parsed.project, "gitlab-org/gitlab");
+    assert.equal(parsed.target, "file");
+    assert.equal(parsed.rest, "master/README.md");
+    assert.deepEqual(parsed.lines, { from: 1, to: 5 });
+  });
+
   it("treats raw and blame links as files, and tree links as directories", () => {
     assert.equal(parseGitlabUrl(`${HOST}/demo/-/raw/main/a.ts`, HOST).target, "file");
     assert.equal(parseGitlabUrl(`${HOST}/demo/-/blame/main/a.ts`, HOST).target, "file");

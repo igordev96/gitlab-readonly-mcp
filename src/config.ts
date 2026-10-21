@@ -50,7 +50,10 @@ function defaultCacheDir(): string {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const host = stripTrailingSlashes((env.GITLAB_HOST ?? "").trim());
   if (!host) {
-    throw new Error("GITLAB_HOST is required (e.g. https://gitlab.example.com).");
+    throw new Error(
+      "GITLAB_HOST is required: the base URL of your GitLab instance, e.g. https://gitlab.example.com or https://gitlab.com. " +
+        "It is required on purpose: project paths are not unique per instance, so the server never guesses which host to read from.",
+    );
   }
   if (!/^https?:\/\//i.test(host)) {
     throw new Error(`GITLAB_HOST must start with http:// or https:// (got "${host}").`);

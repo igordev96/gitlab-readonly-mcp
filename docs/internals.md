@@ -8,10 +8,11 @@ running it is in [`history.md`](history.md).
 ## Why git, not the GitLab REST API
 
 The questions this server answers — read a file at a ref, compare two branches,
-history, blame, search a whole tree — are git's strengths. On a self-managed
-GitLab on a free tier, several of them are the REST API's weaknesses: advanced
-code search is not available, blame and compare are per-resource round trips,
-and a big diff is a large JSON document to paginate. Git already has exact
+history, blame, search a whole tree — are git's strengths. On a GitLab
+instance without Advanced Search (Free, self-managed or gitlab.com), several of
+them are the REST API's weaknesses: advanced code search is not available,
+blame and compare are per-resource round trips, and a big diff is a large JSON
+document to paginate. Git already has exact
 objects for every ref, a fast local search, and no pagination.
 
 So the server fetches with git and answers from git. One `git clone --mirror`
