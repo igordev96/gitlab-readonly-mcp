@@ -674,7 +674,8 @@ Deferred deliberately, so nobody re-litigates it by accident:
   already requires Conventional Commits.
 - **A registry or a published package.** `bin` plus a tarball removes the
   absolute path from every config without putting a second credential on every
-  machine; a private registry adds only version resolution.
+  machine; a private registry adds only version resolution. A release asset
+  carries the tarball (see *Releases*), so neither is needed.
 
 Formatting is enforced on push: the CI job below runs `format:check`. Locally it
 stays voluntary, and a reformat still arrives as its own commit — never inside a
@@ -728,8 +729,7 @@ Dependabot is not configured yet. When it is, `npm` weekly (the exact oxfmt and
 oxlint pins mean updates arrive as reviewable PRs, which is the intent) and
 `github-actions` weekly.
 
-Not covered yet: requiring the checks before merge, a tag-triggered release
-job (releases are made by hand, see *Versioning*), the Windows leg and the Node
+Not covered yet: requiring the checks before merge, the Windows leg and the Node
 26 column. Each has a trigger named above, so none needs re-deciding from
 scratch.
 
@@ -741,9 +741,54 @@ rule is that it equals the newest tag. A release is made by hand — bump
 annotated `vX.Y.Z` tag — rather than with `npm version`, so that the bump is a
 reviewable commit like any other. `test/startup.test.ts` asserts that the
 compiled server reports exactly `package.json`'s version, which is what makes the
-rule enforced rather than remembered.
+rule enforced rather than remembered. Pushing the tag publishes the release —
+see *Releases*, which repeats the gate on that commit before uploading anything.
 
 > The drift that prompted this rule is recorded in `history.md` (findings log).
+
+### Releases
+
+`.github/workflows/release.yml` runs when a `vX.Y.Z` tag is pushed, and attaches
+the packed tarball to a GitHub release. That is what makes the install one line
+for someone with no checkout and no npm account:
+
+```powershell
+npm install -g https://github.com/igordev96/gitlab-readonly-mcp/releases/download/vX.Y.Z/gitlab-readonly-mcp-X.Y.Z.tgz
+```
+
+Two guards run before anything is built, so a bad tag costs a minute and leaves
+no release behind:
+
+- **The tag must name the version `package.json` declares.** This is the rule
+  above, enforced at the only moment it can be checked.
+- **The tag's commit must be an ancestor of `origin/main`.** A release is a
+  claim about a commit, and a commit that never passed the gate cannot make one.
+
+Decisions rather than template defaults:
+
+- **Release assets, not workflow artifacts.** An artifact belongs to a run and
+  expires (90 days by default); an asset belongs to a tag and does not. The
+  install line has to work months later, for someone who was not there when it
+  ran — and it does so anonymously: the asset downloaded with no token.
+- **The full gate runs again here**, although `main` was green when the tag was
+  made. The job that publishes the artifact verifies the artifact's commit; an
+  earlier run is a different claim about a different moment.
+- **The package is checked twice.** `check:pack` asserts on npm's own file
+  report; the job then reads the archive with `tar -tzf` and asserts that
+  `dist/index.js` is present and `src/` is not. Two oracles, because they are
+  wrong in different ways.
+- **`contents: write` on the job, not the workflow**, so `ci.yml` keeps a
+  read-only token.
+- **Publishing is idempotent**: create the release if it is missing, then
+  `gh release upload --clobber`. A failed upload is fixed by re-running the job,
+  not by deleting a release by hand.
+- **Notes are a fixed preamble plus generated notes.** The preamble carries the
+  install command and the one trap: GitHub's *Source code* archives have no
+  `dist/` and are not installable. Generated notes list merged pull requests
+  only, so on this repository that section is a compare link.
+
+Not covered: signing, provenance, and a registry publish — the last is argued
+down under *Tooling*. Any of the three is a new decision, not a step.
 
 ### OpenCode wiring (Phase 1)
 

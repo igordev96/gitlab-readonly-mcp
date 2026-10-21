@@ -24,17 +24,29 @@ git's strengths and, on a self-managed free tier, the REST API's weaknesses.
 
 ## Install
 
-Not published to npm (`private: true`). Build a tarball and install it
-globally:
+Install the tarball attached to the [latest
+release](https://github.com/igordev96/gitlab-readonly-mcp/releases/latest). No
+checkout, no build, no npm account:
+
+```powershell
+npm install -g https://github.com/igordev96/gitlab-readonly-mcp/releases/download/v0.10.1/gitlab-readonly-mcp-0.10.1.tgz
+```
+
+Each release carries `SHA256SUMS` beside the tarball if you want to check the
+download before installing it. The package is not on npm (`private: true`), and
+the **Source code** archives GitHub attaches to a release are repository
+snapshots without `dist/` — they install nothing.
+
+To work on the server instead, build the tarball from your checkout:
 
 ```powershell
 npm install
-npm pack --pack-destination .          # gitlab-readonly-mcp-0.10.0.tgz
-npm install -g .\gitlab-readonly-mcp-0.10.0.tgz
+npm pack --pack-destination .          # gitlab-readonly-mcp-0.10.1.tgz
+npm install -g .\gitlab-readonly-mcp-0.10.1.tgz
 ```
 
-That puts `gitlab-readonly-mcp` on `PATH`; it speaks MCP on stdio from any
-directory. To upgrade, repeat after the version bump. To uninstall,
+Either way, `gitlab-readonly-mcp` lands on `PATH` and speaks MCP on stdio from
+any directory. To upgrade, install the newer release's tarball. To uninstall,
 `npm rm -g gitlab-readonly-mcp`.
 
 Under `nvm`, global packages live inside the active Node version, so switching
@@ -102,7 +114,8 @@ on. All sixteen are listed below.
 
 Cursor reads MCP servers from a `mcpServers` object, in `.cursor/mcp.json` for
 one project or `~/.cursor/mcp.json` for every project
-(`%USERPROFILE%\.cursor\mcp.json` on Windows).
+(`%USERPROFILE%\.cursor\mcp.json` on Windows). It starts the command from
+[Install](#install), so that has to be on `PATH` first.
 
 ```jsonc
 {

@@ -130,23 +130,28 @@ equals the newest tag. `startup.test.ts` asserts that the compiled entry point
 reports exactly the `package.json` version, so a half-finished bump fails the
 suite.
 
-Releases are made by hand, so the bump is a reviewable commit rather than a side
-effect:
+The bump is a reviewable commit rather than a side effect of tagging:
 
 ```powershell
 npm version minor --no-git-tag-version   # bumps package.json and both lock fields
 git add package.json package-lock.json   # the flag stops npm from committing or tagging
 git commit -m "chore(release): X.Y.Z"
+git push origin main
 git tag -a vX.Y.Z -m "vX.Y.Z — <phase>"
+git push origin vX.Y.Z
 ```
 
 There are no `preversion` / `version` / `postversion` scripts, so nothing commits,
 tags or pushes behind your back. The milestone row in `history.md` is written
 *after* the tag exists, because a commit cannot reference its own tag.
 
-The installed copy is separate from the tag: `npm pack` then
-`npm install -g .\gitlab-readonly-mcp-X.Y.Z.tgz` to update it, and restart the
-MCP server — a running process keeps the code it started with.
+Pushing the tag publishes the release. `release.yml` re-runs the gate on that
+commit, refuses a tag that disagrees with `package.json` or is not on `main`, and
+uploads the tarball with `SHA256SUMS` (see `plan.md`, *Releases*). Watch that run
+before announcing the version: the log is the release's receipt.
+
+The installed copy is separate from the tag: install the release's tarball URL,
+then restart the MCP server — a running process keeps the code it started with.
 
 ## Adding a tool
 
