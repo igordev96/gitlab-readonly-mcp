@@ -1,0 +1,121 @@
+name: Release
+
+# A tag is the only way in, and the tag has to earn it: it must name the version
+# package.json declares, and its commit must be on main. Both guards run before
+# anything is built, so a wrong tag leaves no release behind and costs a minute.
+#
+# Everything after the guards is the CI gate run again in this job, then the
+# packaging of exactly that build. The reasoning is in docs/plan.md under
+# "Releases", next to the CI section it deliberately duplicates.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The ancestry guard compares against main, which needs real history.
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: The tag must name the version package.json declares
+        run: |
+          version="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json','utf8')).version")"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json (v$version)"
+            exit 1
+          fi
+          echo "$GITHUB_REF_NAME matches package.json"
+
+      - name: The tag must point at a commit on main
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not an ancestor of origin/main"
+            exit 1
+          fi
+          echo "$GITHUB_REF_NAME is on main"
+
+      # The same steps as ci.yml, on purpose: the release is a claim about this
+      # commit, and the job making the claim is the one that verifies it.
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run check:pack
+
+      - name: Pack the build the gate approved
+        id: pack
+        run: |
+          npm pack --json > pack.json
+          tarball="$(node -p "JSON.parse(require('node:fs').readFileSync('pack.json','utf8'))[0].filename")"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "packed $tarball"
+
+      # check:pack asserts on npm's own file report; this reads the archive.
+      - name: The archive must carry the entry point and nothing working
+        run: |
+          tarball="${{ steps.pack.outputs.tarball }}"
+          tar -tzf "$tarball" > entries.txt
+          grep -qx 'package/dist/index.js' entries.txt \
+            || { echo "::error::$tarball contains no dist/index.js"; exit 1; }
+          if grep -q '^package/src/' entries.txt; then
+            echo "::error::$tarball ships src/; files: [\"dist\"] has regressed"
+            exit 1
+          fi
+          echo "$(wc -l < entries.txt) entries: entry point present, no src/"
+
+      - name: Checksum the asset
+        run: |
+          sha256sum "${{ steps.pack.outputs.tarball }}" > SHA256SUMS
+          cat SHA256SUMS
+
+      # Create and upload in two steps so a failed upload can be retried by
+      # re-running this job; --clobber makes the second attempt harmless.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          tarball="${{ steps.pack.outputs.tarball }}"
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$tarball"
+
+          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$tag" --jq .body > generated.md
+
+          {
+            echo "## Install"
+            echo
+            echo '```'
+            echo "npm i -g $url"
+            echo '```'
+            echo
+            echo '`SHA256SUMS` covers the tarball. GitHub'"'"'s **Source code** archives'
+            echo 'are repository snapshots without `dist/` and are not installable.'
+            echo
+            cat generated.md
+          } > NOTES.md
+
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --title "$tag" --notes-file NOTES.md
+          gh release upload "$tag" "$tarball" SHA256SUMS --clobber
+          echo "published $url"
