@@ -33,9 +33,12 @@ npm install -g https://github.com/igordev96/gitlab-readonly-mcp/releases/downloa
 ```
 
 Each release carries `SHA256SUMS` beside the tarball if you want to check the
-download before installing it. The package is not on npm (`private: true`), and
-the **Source code** archives GitHub attaches to a release are repository
-snapshots without `dist/` — they install nothing.
+download before installing it. The package is not on npm (`private: true`), so
+`npx gitlab-readonly-mcp` resolves only on a machine that has already installed
+it: `npx` checks `PATH` before the registry, which is why it can appear to work
+and then fail with a 404 somewhere else. The **Source code** archives GitHub
+attaches to a release are repository snapshots without `dist/` — they install
+nothing.
 
 To work on the server instead, build the tarball from your checkout:
 
@@ -51,6 +54,17 @@ any directory. To upgrade, install the newer release's tarball. To uninstall,
 
 Under `nvm`, global packages live inside the active Node version, so switching
 versions hides the command until you reinstall it.
+
+**Without a global install.** Point `npx` at the release tarball and it runs from
+npm's cache:
+
+```powershell
+npx -y --package https://github.com/igordev96/gitlab-readonly-mcp/releases/download/v0.10.1/gitlab-readonly-mcp-0.10.1.tgz gitlab-readonly-mcp
+```
+
+The first start downloads it; later starts take about a second. In a client
+config those are the same arguments:
+`"command": ["npx", "-y", "--package", "<tarball URL>", "gitlab-readonly-mcp"]`.
 
 ## Configuration
 
@@ -107,6 +121,11 @@ workspace it is launched from, not this project. If the bare name does not
 resolve on your machine, `npm prefix -g` gives the prefix;
 `<prefix>\gitlab-readonly-mcp.cmd` is the same package by absolute path.
 
+`["npx", "-y", "gitlab-readonly-mcp"]` also works — `npx` finds the binary on
+`PATH` and never reaches the registry — but only after the install. Without it
+the command fails with a 404 and the client shows a server with no tools;
+[Install](#install) has the form that needs no install at all.
+
 The tools appear as `gitlab_<tool>` — `gitlab_get_file`, `gitlab_log`, and so
 on. All sixteen are listed below.
 
@@ -114,15 +133,15 @@ on. All sixteen are listed below.
 
 Cursor reads MCP servers from a `mcpServers` object, in `.cursor/mcp.json` for
 one project or `~/.cursor/mcp.json` for every project
-(`%USERPROFILE%\.cursor\mcp.json` on Windows). It starts the command from
-[Install](#install), so that has to be on `PATH` first.
+(`%USERPROFILE%\.cursor\mcp.json` on Windows). It starts a command you have
+installed, or the `npx --package` form from [Install](#install) if you have not.
 
 ```jsonc
 {
   "mcpServers": {
     "gitlab": {
-      "command": "cmd",
-      "args": ["/c", "gitlab-readonly-mcp"],
+      "command": "npx",
+      "args": ["-y", "gitlab-readonly-mcp"],
       "env": {
         "GITLAB_HOST": "https://gitlab.example.com",
         "GITLAB_TOKEN": "${env:GITLAB_TOKEN}",
@@ -133,14 +152,21 @@ one project or `~/.cursor/mcp.json` for every project
 }
 ```
 
-**On Windows the `cmd /c` wrapper is not optional.** The installed package is a
-`.cmd` shim, and Cursor starts the command itself rather than through a shell:
-`"command": "gitlab-readonly-mcp"` fails with `ENOENT` and the server never
-appears in the list. On macOS and Linux the bare name is correct:
+The form above was tested on Windows, where it starts the server through the
+`npx` shim. **If Cursor reports `ENOENT`, wrap it in `cmd /c`.** Clients that
+start the command without a shell cannot execute a `.cmd` file, so the server
+never appears and `MCP Logs` is the only place that says so:
 
 ```jsonc
-"command": "gitlab-readonly-mcp",
+"command": "cmd",
+"args": ["/c", "npx", "-y", "gitlab-readonly-mcp"],
 ```
+
+Once the package is installed, `"command": "gitlab-readonly-mcp"` is equivalent
+to the `npx` form on every platform — `npx` only adds a wrapper process that
+resolves the same binary on `PATH`. Without the install, none of these work; use
+the `--package` form from [Install](#install) instead, where `args` becomes
+`["-y", "--package", "<tarball URL>", "gitlab-readonly-mcp"]`.
 
 Quit Cursor completely and reopen it; a window reload is not always enough. The
 server then shows under **Settings → MCP**, and anything it printed on the way
