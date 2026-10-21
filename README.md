@@ -1,6 +1,7 @@
 # gitlab-readonly-mcp
 
 [![CI](https://github.com/igordev96/gitlab-readonly-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/igordev96/gitlab-readonly-mcp/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/igordev96/gitlab-readonly-mcp?label=Release)](https://github.com/igordev96/gitlab-readonly-mcp/releases/latest)
 
 A small, read-only, **git-backed** MCP server for a self-managed GitLab.
 
