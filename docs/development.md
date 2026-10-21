@@ -145,6 +145,17 @@ There are no `preversion` / `version` / `postversion` scripts, so nothing commit
 tags or pushes behind your back. The milestone row in `history.md` is written
 *after* the tag exists, because a commit cannot reference its own tag.
 
+The README hard-codes the current version in five places, because the release
+asset's file name carries it: the install line at the top of the page, the
+install command under *Install*, the `npm pack` example's file name, and the
+`npx` form's tarball URL. None of them moves with the bump, and a page that
+installs the previous release still looks current — the front page's version
+badge answers "what was released", and the command under it answers "what would
+a reader install". `test/readme.test.ts` is what keeps the two honest: it fails
+when a pinned version is not the one `package.json` declares, and when the
+install command is no longer above the first heading. Bump the version and the
+README, in the same commit.
+
 Pushing the tag publishes the release. `release.yml` re-runs the gate on that
 commit, refuses a tag that disagrees with `package.json` or is not on `main`, and
 uploads the tarball with `SHA256SUMS` (see `plan.md`, *Releases*). Watch that run

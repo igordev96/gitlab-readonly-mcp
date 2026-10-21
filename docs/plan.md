@@ -10,7 +10,7 @@
 
 Status: phases 0, 1, 2a, 2b, 2c-1, 2c-2, 3, 4a and 4b are released, and phase 5
 (documentation) is done. The newest tag
-is `v0.10.0` (diffs and history). Phase 3 was verified live on 2026-10-19.
+is `v0.10.1` (diffs and history). Phase 3 was verified live on 2026-10-19.
 Sixteen tools are implemented: the four reads
 `get_file`, `list_tree`, `list_refs` and `resolve_ref` — exercised against the real
 GitLab on the success path and on a deliberately broken token — plus `search`,
@@ -612,7 +612,7 @@ found, and a code change only where a check fails.
 
 > **Status:** phases 0, 1, 2a, 2b, 2c-1, 2c-2, 3, 4a and 4b are released, and phase
 > 5 (documentation) is done. Phase 3 was verified live on 2026-10-19, including the
-> link shapes 3d added; the newest tag is `v0.10.0`. Phase 5 changes no server
+> link shapes 3d added; the newest tag is `v0.10.1`. Phase 5 changes no server
 > behaviour, so it takes no release. The
 > design, including what was measured, is the section before this table, and each
 > step's outcome is recorded in [`history.md`](history.md).
@@ -675,7 +675,10 @@ Deferred deliberately, so nobody re-litigates it by accident:
 - **A registry or a published package.** `bin` plus a tarball removes the
   absolute path from every config without putting a second credential on every
   machine; a private registry adds only version resolution. A release asset
-  carries the tarball (see *Releases*), so neither is needed.
+  carries the tarball (see *Releases*), so neither is needed *for a personal
+  tool*. Publishing to npm is step 3 of the rollout in §10, and it changes that
+  answer: a package on a registry is found by people who never read this
+  repository.
 
 Formatting is enforced on push: the CI job below runs `format:check`. Locally it
 stays voluntary, and a reformat still arrives as its own commit — never inside a
@@ -822,6 +825,7 @@ down under *Tooling*. Any of the three is a new decision, not a step.
 | Large repos / disk | A partial (`blobless`) clone was considered and **dropped in 4b**: grep, `git show` and pickaxe's patches all need blob contents, so a blobless source would fetch blobs over the network — with credentials — during a read, which is the property this server exists to avoid. The disk answer is a registered local clone. |
 | Unbounded diffs | `compare` returns a capped summary and never a patch; `diff_file` is one file at a time, with a byte cap and a context limit |
 | Token leakage | env + `http.extraheader`, never logged, read-only scope |
+| A published package widens the audience for a tool that holds a token | Read-only by construction; the token never reaches `.git/config`; §10 step 5 states the residual risks; the npm package is published with provenance |
 | Command injection via ref/path | array args, reject leading `-`, `--` separators |
 | Fetch stalls MCP | `GIT_TERMINAL_PROMPT=0`, per-project fetch lock, OpenCode timeouts |
 | Repo already local | Read-only; never mutate working tree |
@@ -836,3 +840,45 @@ down under *Tooling*. Any of the three is a new decision, not a step.
 - Shared/multi-user hosting — would require HTTP transport and real auth.
 - Other git hosts (GitHub/Bitbucket) — git layer is host-agnostic, but nothing
   GitLab-specific beyond the URL parser.
+
+---
+
+## 10. Public rollout
+
+The server works and is verified; what it lacks is a way to be *found*, and a
+first screen that tells a stranger whether it is for them. This section is the
+plan for that. It changes no server behaviour, so — like phase 5 — it takes no
+release of its own until one of its steps changes something a user runs.
+
+**The position.** Not "a GitLab MCP server": that market is taken, and a
+narrower feature list loses to it. The position is **read-only and
+git-backed**, for the self-managed instance the official server cannot reach
+and whose admin will only issue a `read_repository` token. The README leads
+with that, so a reader can decide in fifteen seconds whether to stop reading.
+
+**The steps, in order, each independently shippable:**
+
+| # | Step | What it changes | Done when |
+|---|---|---|---|
+| 1 | A first screen that answers "is this for me?" | The README: who this is for, what it is not, the install line above the fold, and a link to the evidence in `history.md` | A reader who should *not* use it can decide that in fifteen seconds |
+| 2 | A demo, not a description | `docs/demo.md`: one real session, reusing the sanitized output the live checks already produced | The value is visible without installing anything |
+| 3 | Publish to npm | `"private": true` goes; `repository`, `homepage`, `keywords` arrive; the release workflow publishes the tarball with provenance | `npx gitlab-readonly-mcp` works on a clean machine |
+| 4 | Be findable | The MCP registry, the aggregators, one awesome-list entry, and a release whose notes lead with the install | Listed in at least two indexes |
+| 5 | `SECURITY.md` and honest limits | The threat model, what is guaranteed, and the residual risks named below | An admin can read one page and say yes |
+
+**What is deliberately not in it.** No write tools, no merge-request or issue
+access, no HTTP transport, and no rewrite of `repoStore.ts` — 3,028 lines in
+one file is the largest debt in the tree, and it is the riskiest change
+available to a project with no users yet. It waits for a stranger's issue.
+
+**Open decisions, both the owner's.** Whether the npm publish runs from CI
+with provenance (`id-token: write` plus an `NODE_AUTH_TOKEN` secret) or by
+hand, and whether the version that carries the new install instructions is
+`0.11.0`. Neither is needed for steps 1, 2 or 5.
+
+**The residual risk step 5 has to state.** The token reaches git as
+`-c http.extraheader=…`, which puts it in git's **command line** for the life
+of the call. It never reaches `.git/config` — that is the guarantee the README
+makes — but a process running as the same user can read it from the process
+list while that call runs. Small on a single-user machine, and worth saying
+plainly to the audience this rollout targets.

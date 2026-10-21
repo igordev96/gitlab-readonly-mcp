@@ -10,6 +10,56 @@ branches that are not checked out locally — without ever touching your working
 tree. Content comes from a local bare mirror the server keeps in a cache
 directory, or from a clone of your own when you register one.
 
+**Install** — one command, no checkout, no build:
+
+```powershell
+npm install -g https://github.com/igordev96/gitlab-readonly-mcp/releases/download/v0.10.1/gitlab-readonly-mcp-0.10.1.tgz
+```
+
+[Install notes](#install): Windows, `nvm`, the form that needs no install at all,
+and how to uninstall.
+
+## Who this is for
+
+**Use this when**
+
+- **your GitLab is self-managed and older than 18.3**, or an admin has not
+  enabled the official GitLab MCP server. This one talks to git rather than to
+  the REST API, so it needs none of that;
+- **the only token you can get is read-only.** `read_repository` is enough, and
+  enough is all the server could use: it has no write path to use it with;
+- **you want search, blame, pickaxe and compare on a free-tier instance.** Code
+  search through the REST API needs Advanced Search, and pickaxe has no API
+  equivalent at all; over git they cost nothing;
+- **you need a branch that is not checked out**, or a file from a commit that
+  never reached your machine, without disturbing the working tree you have.
+
+**Not this when**
+
+- **your instance is 18.3 or newer and the official server is enabled.** It
+  covers more, and it is the better first choice;
+- **the agent has to change something** — write a file, comment, open a merge
+  request. This server is read-only, on purpose;
+- **you need merge requests, issues, pipelines or CI logs.** It reads version
+  control, not the tracker around it.
+
+## What it is not
+
+- **One GitLab instance per server.** `GITLAB_HOST` names a single host; a
+  second instance means a second server.
+- **No write path.** Not a matter of configuration — there is no tool that
+  writes, and a `read_repository` token could not use one.
+- **Mirrors are full clones.** A project costs its repository size on disk;
+  `blobless` is refused, and why is in [the risks table](docs/plan.md#8-risks).
+  A repository you already have costs nothing: register it with `add_repo` and
+  it is read from there.
+- **Not a git client.** It never checks anything out, never writes to your
+  working tree, and never pushes.
+
+> **Evidence.** Each release was verified against a live GitLab. The milestones
+> table in [`docs/history.md`](docs/history.md) records what was checked, what
+> failed, and what is still unverified.
+
 ## Why git instead of the GitLab REST API?
 
 Reading a file at a ref, comparing branches, history, blame and code search are
