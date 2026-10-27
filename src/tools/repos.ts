@@ -86,7 +86,7 @@ export function registerRepoTools(server: McpServer, store: RepoStore, config: C
             "GitLab project path, e.g. 'group/subgroup/repo'. Defaults to GITLAB_DEFAULT_PROJECT.",
           ),
       },
-      annotations: { readOnlyHint: false, openWorldHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     },
     async ({ project, local_path }) => {
       const target = project?.trim() || config.defaultProject;
@@ -199,7 +199,7 @@ export function registerRepoTools(server: McpServer, store: RepoStore, config: C
             "GitLab project path, e.g. 'group/subgroup/repo'. Defaults to GITLAB_DEFAULT_PROJECT.",
           ),
       },
-      annotations: { readOnlyHint: false, openWorldHint: true },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
     async ({ project }) => {
       const target = project?.trim() || config.defaultProject;

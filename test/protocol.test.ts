@@ -91,6 +91,32 @@ describe("MCP protocol", () => {
     }
   });
 
+  it("declares read-only and destructive hints on every tool", async () => {
+    const { tools } = await client.listTools();
+
+    const withoutReadOnly = tools
+      .filter((tool) => tool.annotations?.readOnlyHint === undefined)
+      .map((tool) => tool.name);
+    assert.deepEqual(
+      withoutReadOnly,
+      [],
+      `every tool must declare readOnlyHint; missing on ${withoutReadOnly.join(", ")}`,
+    );
+
+    const withoutDestructive = tools
+      .filter(
+        (tool) =>
+          tool.annotations?.readOnlyHint === false &&
+          tool.annotations.destructiveHint === undefined,
+      )
+      .map((tool) => tool.name);
+    assert.deepEqual(
+      withoutDestructive,
+      [],
+      `a tool that is not read-only must state destructiveHint; missing on ${withoutDestructive.join(", ")}`,
+    );
+  });
+
   it("searches a tree at a ref, and follows a string through history", async () => {
     const found = await client.callTool({
       name: "search",
