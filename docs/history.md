@@ -206,6 +206,12 @@ blow-by-blow.
 - `docs/plan.md` (`65ba524`) — the source-layout block replaced by a pointer
   (−49 lines), plus the phase-5 row and status that say the phase takes no
   release. Its finished-feature design was deliberately left alone.
+- `SECURITY.md` (new, 120 lines, 2026-10-27) for rollout step 5: what runs, the
+  token's path through the process and its brief visibility to same-user
+  processes, what the server writes, the one host it connects to, repository
+  content as untrusted input, the four residual risks, and the tests behind the
+  claims. Linked from the README's Security section. No code change and no
+  release.
 - `src/` — untouched. No service restart (nothing the server reports changed)
   and no tag.
 - Verified: `npm run typecheck` clean; `npm test` 325 tests / 56 suites, 0 fail.

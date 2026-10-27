@@ -880,6 +880,9 @@ seconds whether to stop reading.
 | 4 | Be findable | The MCP registry, the aggregators, one awesome-list entry, and a release whose notes lead with the install | Listed in at least two indexes |
 | 5 | `SECURITY.md` and honest limits | The threat model, what is guaranteed, and the residual risks named below | An admin can read one page and say yes |
 
+Step 5 is done: [`SECURITY.md`](../SECURITY.md) states the threat model, the
+guarantee and the residual risks, and the README links to it.
+
 **What is deliberately not in it.** No write tools, no merge-request or issue
 access, no HTTP transport, and no rewrite of `repoStore.ts` — 3,028 lines in
 one file is the largest debt in the tree, and it is the riskiest change

@@ -1,15 +1,15 @@
 # Development
 
 Working on the server itself: building it, testing it, and releasing it. The
-rules for *how* work is done — checkpoints, approvals, the live check at the end
-of a phase — are in [`AGENTS.md`](../AGENTS.md).
+rules for *how* work is done (checkpoints, approvals, the live check at the end
+of a phase) are in [`AGENTS.md`](../AGENTS.md).
 
 ## Build and test
 
-The floor is Node 24 (`engines`), and `.nvmrc` pins 24.21.0 — the version this
-repository is developed on — so `nvm use` picks it up. The floor rose from 20 in
+The floor is Node 24 (`engines`), and `.nvmrc` pins 24.21.0, the version this
+repository is developed on, so `nvm use` picks it up. The floor rose from 20 in
 October 2026 for two reasons: Node 20 reached end-of-life on 2026-04-30, and the
-lint tooling wants at least 20.19 or 22.12. The server itself needs neither; the
+lint tooling wants at least 20.19 or 22.12. The server itself needs neither. The
 tooling is what pulls the floor up, and `engines` describes the repository, not
 only the runtime.
 
@@ -38,17 +38,17 @@ npm run format        # rewrite in place
 npm run format:check  # report what a gate would reject
 ```
 
-`printWidth` is **100**, and that is a measurement rather than a preference. A
-first pass at 80 changed 2760 lines across 28 files; at 100 it changed 574
-across 20. The 81–100 band was drift, not a style anyone chose, and 80 would
-have rewrapped nine hundred lines that read fine. Re-measure before changing it.
+`printWidth` is **100**, chosen by measurement. A first pass at 80 changed 2760
+lines across 28 files; at 100 it changed 574 across 20. The 81 to 100 band was
+drift, not a style anyone chose, and 80 would have rewrapped nine hundred lines
+that read fine. Re-measure before changing it.
 
 Markdown is excluded with `ignorePatterns`. Oxfmt pads every table cell to a
-uniform width and rewrites the config examples inside fences — churn in the
-docs, not in the code. The README and `docs/` are hand-wrapped at 79 columns on
-purpose.
+uniform width and rewrites the config examples inside fences, which is churn in
+the docs rather than in the code. The README and `docs/` are hand-wrapped at 79
+columns on purpose.
 
-CI runs `format:check` on every push to `main`, calling this same script; there
+CI runs `format:check` on every push to `main`, calling this same script. There
 is still no commit hook, so running `npm run format` before pushing is voluntary.
 See the tooling policy in [`plan.md`](plan.md).
 
@@ -64,9 +64,9 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 ## Linting
 
 [oxlint](../.oxlintrc.jsonc) lints, pinned exactly for the same reason oxfmt is.
-It does not replace `tsc --noEmit`: oxlint is fast because it does no
-type-aware analysis, and `--type-aware` is deliberately off — a second type
-engine can only disagree with the first.
+It does not replace `tsc --noEmit`: oxlint is fast because it does no type-aware
+analysis, and `--type-aware` is deliberately off because a second type engine
+can only disagree with the first.
 
 ```powershell
 npm run lint      # report
@@ -91,12 +91,12 @@ in a ref, a path and a query, plus the stripper for git's `-z` records) and one
 `reportUnusedDisableDirectives` is on, so a suppression that stops being needed
 is reported rather than rotting.
 
-Note the naming: core rules are unprefixed (`no-control-regex`), plugin rules
-keep the prefix (`unicorn/no-new-array`). A directive that matches no finding
-suppresses nothing and is itself reported as unused.
+Core rules are unprefixed (`no-control-regex`); plugin rules keep the prefix
+(`unicorn/no-new-array`). A directive that matches no finding suppresses nothing
+and is itself reported as unused.
 
-Two rules are off for `test/**` only — `no-shadow` and
-`consistent-function-scoping` — because a helper named `store`, `git` or
+Two rules are off for `test/**` only (`no-shadow` and
+`consistent-function-scoping`), because a helper named `store`, `git` or
 `client` reads better beside the test that uses it than an invented second name
 does. In `src/` both stay on, and that is where the one real finding in the
 first run was: four `path` locals shadowing the `node:path` import.
@@ -107,8 +107,8 @@ locally.
 ## The test fixture
 
 Tests never touch the network or need a token. `test/fixture.ts` builds a
-throwaway "GitLab" under the system temp directory — a working repository plus a
-bare repository it pushes to — so real clone and fetch behaviour is exercised,
+throwaway "GitLab" under the system temp directory (a working repository plus a
+bare repository it pushes to), so real clone and fetch behaviour is exercised,
 including freshness. Each test file gets its own fixture directory, so files run
 in parallel.
 
@@ -118,8 +118,8 @@ check against the real GitLab is what covers the rest.
 
 Fixture commits carry explicit dates, a minute apart from a fixed base, rather
 than whatever the clock says. Without that, two commits made inside one second
-have no defined order and `git log` breaks the tie by something other than
-creation order — which passed on Windows and failed on the first Linux CI run.
+have no defined order, and `git log` breaks the tie by something other than
+creation order. That passed on Windows and failed on the first Linux CI run.
 Pinned dates also mean a fixture date can be asserted by value rather than by
 shape.
 
@@ -141,20 +141,20 @@ git tag -a vX.Y.Z -m "vX.Y.Z — <phase>"
 git push origin vX.Y.Z
 ```
 
-There are no `preversion` / `version` / `postversion` scripts, so nothing commits,
-tags or pushes behind your back. The milestone row in `history.md` is written
-*after* the tag exists, because a commit cannot reference its own tag.
+There are no `preversion` / `version` / `postversion` scripts, so nothing
+commits, tags or pushes behind your back. The milestone row in `history.md` is
+written *after* the tag exists, because a commit cannot reference its own tag.
 
 The README hard-codes the current version in five places, because the release
 asset's file name carries it: the install line at the top of the page, the
-install command under *Install*, the `npm pack` example's file name, and the
-`npx` form's tarball URL. None of them moves with the bump, and a page that
-installs the previous release still looks current — the front page's version
-badge answers "what was released", and the command under it answers "what would
-a reader install". `test/readme.test.ts` is what keeps the two honest: it fails
-when a pinned version is not the one `package.json` declares, and when the
-install command is no longer above the first heading. Bump the version and the
-README, in the same commit.
+install command under *Install*, the `npm pack` example's file name, the
+`npm install` command that uses it, and the `npx` form's tarball URL. None of
+them moves with the bump. A page that installs the previous release still looks
+current, because the front page's version badge answers "what was released" and
+the command under it answers "what would a reader install". `test/readme.test.ts`
+keeps the two honest: it fails when a pinned version is not the one
+`package.json` declares, and when the install command is no longer above the
+first heading. Bump the version and the README in the same commit.
 
 Pushing the tag publishes the release. `release.yml` re-runs the gate on that
 commit, refuses a tag that disagrees with `package.json` or is not on `main`, and
@@ -162,17 +162,18 @@ uploads the tarball with `SHA256SUMS` (see `plan.md`, *Releases*). Watch that ru
 before announcing the version: the log is the release's receipt.
 
 The installed copy is separate from the tag: install the release's tarball URL,
-then restart the MCP server — a running process keeps the code it started with.
+then restart the MCP server, because a running process keeps the code it started
+with.
 
 ## Adding a tool
 
 The mechanical path; the process rules are in `AGENTS.md`.
 
-1. Design it in `plan.md` §4 first — what it answers, its arguments, its caps and
+1. Design it in `plan.md` §4 first: what it answers, its arguments, its caps and
    its failure shapes.
 2. Put the reading and parsing in `repoStore.ts`, returning a typed result.
 3. Add the tool and its formatting to the right `src/tools/*.ts`, with a
-   description that says how to read the result — the descriptions are the
+   description that says how to read the result. The descriptions are the
    agent's manual, so they carry the semantics.
 4. Register it in `server.ts` and extend the agent instructions there.
 5. Test the store, the parser and the rendering in the matching

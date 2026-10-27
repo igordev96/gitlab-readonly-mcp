@@ -3,14 +3,14 @@
 [![CI](https://github.com/igordev96/gitlab-readonly-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/igordev96/gitlab-readonly-mcp/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/igordev96/gitlab-readonly-mcp?label=Release)](https://github.com/igordev96/gitlab-readonly-mcp/releases/latest)
 
-A small, read-only, **git-backed** MCP server for GitLab (self-managed or gitlab.com).
+A small, read-only, git-backed MCP server for GitLab (self-managed or gitlab.com).
 
-It lets an AI agent read files from **any branch, tag, or commit** — including
-branches that are not checked out locally — without ever touching your working
-tree. Content comes from a local bare mirror the server keeps in a cache
-directory, or from a clone of your own when you register one.
+It lets an AI agent read files from **any branch, tag, or commit**, including
+branches that are not checked out locally, without touching your working tree.
+Content comes from a local bare mirror the server keeps in a cache directory, or
+from a clone of your own when you register one.
 
-**Install** — one command, no checkout, no build:
+The install is one command, with no checkout and no build:
 
 ```powershell
 npm install -g https://github.com/igordev96/gitlab-readonly-mcp/releases/download/v0.10.1/gitlab-readonly-mcp-0.10.1.tgz
@@ -24,40 +24,42 @@ and how to uninstall.
 **Use this when**
 
 - **the only token you can get is a project access token or a legacy PAT.** The
-  official GitLab MCP server rejects both (it requires OAuth with the `mcp`
-  scope or a fine-grained PAT with the MCP tool resource). This server needs
-  only `read_repository`, and has no write path to use more with;
-- **your instance has no Advanced Search** — Free, or a self-managed instance
-  where it is not configured. The REST API's code search (`blobs` scope) needs
-  it; search, blame, pickaxe and compare run over git, cost nothing, and one
-  fetch per TTL serves every read instead of an API call per tool;
-- **the official server is unavailable** — your GitLab is older than 18.3, or
-  the instance admin (on gitlab.com, a top-level group Owner) has not enabled
-  it. This server works on self-managed and gitlab.com alike, as long as the
+  official GitLab MCP server rejects both. It needs OAuth with the `mcp` scope,
+  or a fine-grained PAT with the MCP tool resource. This server needs only
+  `read_repository`, and has no write path that could use more;
+- **your instance has no Advanced Search**, either because it is Free or because
+  a self-managed instance does not configure it. The REST API's code search
+  needs the `blobs` scope. Search, blame, pickaxe and compare run over git and
+  cost nothing, so one fetch per TTL serves every read instead of an API call
+  per tool;
+- **the official server is unavailable**: your GitLab is older than 18.3, or the
+  instance admin (on gitlab.com, a top-level group Owner) has not enabled it.
+  This server works on self-managed and gitlab.com alike, as long as the
   repository can be cloned over HTTPS with a read-only token;
 - **you need a branch that is not checked out**, or a file from a commit that
-  never reached your machine, without disturbing the working tree you have.
+  never reached your machine, and you do not want to disturb the working tree
+  you have.
 
 **Not this when**
 
 - **you can use the official GitLab MCP server and want its full feature set.**
-  It covers more, and it is the better first choice if your token and
+  It covers more, and it is the better first choice when your token and
   permissions allow it;
-- **the agent has to change something** — write a file, comment, open a merge
-  request. This server is read-only, on purpose;
+- **the agent has to change something**: write a file, comment, open a merge
+  request. This server is read-only on purpose;
 - **you need merge requests, issues, pipelines or CI logs.** It reads version
-  control, not the tracker around it.
+  control, not the tracker.
 
 ## What it is not
 
 - **One GitLab instance per server.** `GITLAB_HOST` names a single host; a
   second instance means a second server.
-- **No write path.** Not a matter of configuration — there is no tool that
-  writes, and a `read_repository` token could not use one.
-- **Mirrors are full clones.** A project costs its repository size on disk;
-  `blobless` is refused, and why is in [the risks table](docs/plan.md#8-risks).
-  A repository you already have costs nothing: register it with `add_repo` and
-  it is read from there.
+- **No write path.** No configuration enables writing: there is no tool that
+  writes, and a `read_repository` token could not use one if there were.
+- **Mirrors are full clones.** A project costs its repository size on disk.
+  `blobless` is refused, and the reason is in [the risks
+  table](docs/plan.md#8-risks). A repository you already have costs nothing:
+  register it with `add_repo` and it is read from there.
 - **Not a git client.** It never checks anything out, never writes to your
   working tree, and never pushes.
 
@@ -68,7 +70,7 @@ and how to uninstall.
 ## Why git instead of the GitLab REST API?
 
 Reading a file at a ref, comparing branches, history, blame and code search are
-git's strengths and, without Advanced Search, the REST API's weaknesses.
+git's strengths. Without Advanced Search, the REST API is weak at most of them.
 [How it works](docs/internals.md) has the longer answer.
 
 ## Requirements
@@ -91,10 +93,9 @@ npm install -g https://github.com/igordev96/gitlab-readonly-mcp/releases/downloa
 Each release carries `SHA256SUMS` beside the tarball if you want to check the
 download before installing it. The package is not on npm (`private: true`), so
 `npx gitlab-readonly-mcp` resolves only on a machine that has already installed
-it: `npx` checks `PATH` before the registry, which is why it can appear to work
-and then fail with a 404 somewhere else. The **Source code** archives GitHub
-attaches to a release are repository snapshots without `dist/` — they install
-nothing.
+it. `npx` checks `PATH` before the registry, which is why it can appear to work
+and then fail with a 404 elsewhere. The **Source code** archives GitHub attaches
+to a release are repository snapshots without `dist/`, so they install nothing.
 
 To work on the server instead, build the tarball from your checkout:
 
@@ -111,8 +112,8 @@ any directory. To upgrade, install the newer release's tarball. To uninstall,
 Under `nvm`, global packages live inside the active Node version, so switching
 versions hides the command until you reinstall it.
 
-**Without a global install.** Point `npx` at the release tarball and it runs from
-npm's cache:
+**Without a global install.** Point `npx` at the release tarball and it runs
+from npm's cache:
 
 ```powershell
 npx -y --package https://github.com/igordev96/gitlab-readonly-mcp/releases/download/v0.10.1/gitlab-readonly-mcp-0.10.1.tgz gitlab-readonly-mcp
@@ -171,19 +172,19 @@ Or add it to configuration by hand (`mcp.servers`):
 }
 ```
 
-The command is the installed binary, so the entry point no longer depends on
-where the checkout lives — a global MCP server's working directory is the
-workspace it is launched from, not this project. If the bare name does not
-resolve on your machine, `npm prefix -g` gives the prefix;
+The command is the installed binary, so the entry point does not depend on where
+the checkout lives. A global MCP server's working directory is the workspace it
+is launched from, not this project. If the bare name does not resolve on your
+machine, `npm prefix -g` gives the prefix;
 `<prefix>\gitlab-readonly-mcp.cmd` is the same package by absolute path.
 
-`["npx", "-y", "gitlab-readonly-mcp"]` also works — `npx` finds the binary on
-`PATH` and never reaches the registry — but only after the install. Without it
-the command fails with a 404 and the client shows a server with no tools;
-[Install](#install) has the form that needs no install at all.
+`["npx", "-y", "gitlab-readonly-mcp"]` also works, but only after the install:
+`npx` finds the binary on `PATH` and never reaches the registry. Without the
+install the command fails with a 404 and the client shows a server with no
+tools; [Install](#install) has the form that needs no install at all.
 
-The tools appear as `gitlab_<tool>` — `gitlab_get_file`, `gitlab_log`, and so
-on. All sixteen are listed below.
+The tools appear as `gitlab_<tool>`, such as `gitlab_get_file` and
+`gitlab_log`. All sixteen are listed below.
 
 ## Wire into Cursor
 
@@ -219,17 +220,17 @@ never appears and `MCP Logs` is the only place that says so:
 ```
 
 Once the package is installed, `"command": "gitlab-readonly-mcp"` is equivalent
-to the `npx` form on every platform — `npx` only adds a wrapper process that
+to the `npx` form on every platform. `npx` only adds a wrapper process that
 resolves the same binary on `PATH`. Without the install, none of these work; use
 the `--package` form from [Install](#install) instead, where `args` becomes
 `["-y", "--package", "<tarball URL>", "gitlab-readonly-mcp"]`.
 
 Quit Cursor completely and reopen it; a window reload is not always enough. The
 server then shows under **Settings → MCP**, and anything it printed on the way
-up is in **Output → MCP Logs** — the first place to look when the entry exists
+up is in **Output → MCP Logs**, the first place to look when the entry exists
 but its tools do not.
 
-Two traps, both silent:
+Two traps are silent:
 
 - **The interpolation syntax is not OpenCode's.** Cursor resolves
   `${env:NAME}`; OpenCode resolves `{env:NAME}`. Copy a config from one to the
@@ -246,13 +247,13 @@ Two traps, both silent:
 | Tool | What it answers |
 |---|---|
 | **Files and trees** | |
-| `get_file` | One file at a ref — the whole file or a line range. Accepts a blob, raw or blame link. |
+| `get_file` | One file at a ref, the whole file or a line range. Accepts a blob, raw or blame link. |
 | `list_tree` | A directory at a ref, one level deep or recursive. Accepts a tree link. |
 | **Refs** | |
 | `list_refs` | Branches and tags, with the commit each points at. |
 | `resolve_ref` | What a branch, tag or sha resolves to, with close matches when the name is wrong. |
 | **Search** | |
-| `search` | Grep a ref's tree, grouped by file — matched lines, file paths, or per-file counts. |
+| `search` | Grep a ref's tree, grouped by file: matched lines, file paths, or per-file counts. |
 | `pickaxe` | The commits whose diff changed how often a text appears. |
 | **History and diffs** | |
 | `log` | A ref's history, optionally for one path. Accepts a history link. |
@@ -261,7 +262,7 @@ Two traps, both silent:
 | `compare` | What changed on one ref since it split from another, as a capped file summary. |
 | `diff_file` | One file's patch between two refs. |
 | **Links** | |
-| `parse_gitlab_url` | What a GitLab link names — project, target, ref, path and line range — without reading anything. |
+| `parse_gitlab_url` | What a GitLab link names (project, target, ref, path and line range), without reading anything. |
 | **Repository policy** | |
 | `list_repos` | Every project in use: its source, its policy and its true age. |
 | `sync_repo` | Fetch now, ignoring the TTL. |
@@ -271,11 +272,11 @@ Two traps, both silent:
 ## Quickstart
 
 Examples use `group/sub/repo`; set `GITLAB_DEFAULT_PROJECT` to leave `project=`
-out. Every result says which commit answered and how fresh it is — see
-[What the odd bits mean](#what-the-odd-bits-mean).
+out. Every result says which commit answered and how fresh it is, which
+[What the odd bits mean](#what-the-odd-bits-mean) explains.
 
-**Read a file from a branch you have not checked out.** No clone of your own, no
-checkout, no change to your working tree:
+**Read a file from a branch you have not checked out.** There is no clone of
+your own to make, and your working tree stays as it is:
 
 ```
 gitlab_get_file(project="group/sub/repo", ref="fix/PROJ-7608", path="src/index.tsx")
@@ -315,7 +316,7 @@ branch	abc123def456	fix/PROJ-7608	PROJ-7608: adjust the header
 </refs>
 ```
 
-**Find where something is used** — no clone, no knowledge of the file:
+**Find where something is used** without a clone or a file path:
 
 ```
 gitlab_search(project="group/sub/repo", ref="fix/PROJ-7608", query="orderTotals")
@@ -352,8 +353,8 @@ to `log`. A link handed to another tool is refused by name and says which tool
 wants it. `parse_gitlab_url(url)` reports what a link names without reading
 anything, and `resolve=false` does it offline.
 
-**See the history, and who last touched a line.** `path` is optional and is a git
-pathspec, so globs work:
+**See the history, and who last touched a line.** `path` is optional and is a
+git pathspec, so globs work:
 
 ```
 gitlab_log(project="group/sub/repo", ref="fix/PROJ-7608", path="src/index.tsx")
@@ -379,8 +380,8 @@ abc123def456	A. Author	2026-10-15T12:32:33+01:00	122-126
 </blame>
 ```
 
-`get_commit(rev=…)` reads one commit — message, files, line counts, and the
-patch with `patch=true`.
+`get_commit(rev=…)` reads one commit: message, files, line counts, and the patch
+with `patch=true`.
 
 **Compare two branches.** `compare` prints the merge base it used, so which diff
 ran is never hidden:
@@ -403,7 +404,7 @@ printed as `from` for the branch's own view of the file.
 - `search` and `pickaxe` match **literally and case-insensitively**: `foo|bar`
   looks for that text. Pass `regex=true` for alternation, `case_sensitive=true`
   for exact case.
-- A plain pathspec's `**` needs a directory level — `src/**/*.tsx` misses
+- A plain pathspec's `**` needs a directory level, so `src/**/*.tsx` misses
   `src/index.tsx`. Use `:(glob)src/**/*.tsx` for zero or more.
 - Omit `ref` to read the default branch, which is what a fresh clone shows you.
 - `#L12` and `#L12-20` anchors are 1-based and inclusive.
@@ -412,7 +413,7 @@ printed as `from` for the branch's own view of the file.
 - Binary files are refused where the answer would be meaningless (a read, a
   blame); a diff gives git's `Binary files … differ` line instead of a patch.
 - Caps are always reported: `truncated="true"`, `total=…` and `[cut: …]` say
-  when an answer was shortened, rather than quietly returning less.
+  when an answer was shortened.
 
 ## What the odd bits mean
 
@@ -421,15 +422,15 @@ printed as `from` for the branch's own view of the file.
 | `synced_at="…"` | When the source that answered last fetched successfully. `unknown` means no successful fetch has ever stamped it. |
 | `refresh_failed="true"` | A refresh was due and failed, so the answer came from the cache; a `[refresh failed: …]` note says why. |
 | `truncated="true"` / `total=…` | The answer was capped. Where the tool can count it, `total` is the real number before the cap. |
-| `ref_confirmed="false"` | `parse_gitlab_url` could not match the link's ref against the project's refs — it is offline, or the link names a sha. `commit="…"` is the resolved revision when the link names one. |
+| `ref_confirmed="false"` | `parse_gitlab_url` could not match the link's ref against the project's refs: it is offline, or the link names a sha. `commit="…"` is the resolved revision when the link names one. |
 | `merge_base="none"` | The two refs share no history, so `compare` ran the raw two-dot diff and said so. |
 | `(no matches)` | Nothing matched. That is an answer, not an error. |
 
 ## Repositories and policy
 
-A project registers itself the first time it is used — its mirror is cloned on
-demand — or explicitly with `add_repo`. The registry is a small `repos.json` in
-the cache directory:
+A project registers itself the first time it is used, when its mirror is cloned
+on demand, or explicitly with `add_repo`. The registry is a small `repos.json`
+in the cache directory:
 
 ```
 <repos count="2">
@@ -439,10 +440,10 @@ group/sub/other	source=local	freshness=ttl	ttl=600s	present=true	local_path=C:\w
 ```
 
 `synced_at` is when **that source** last fetched successfully, or `unknown` when
-no fetch has ever stamped it; `present=false` means the project is registered but
-its data is not on disk — a mirror never cloned, or a clone since moved. A
-project's policy can be overridden by hand (absent fields mean the configured
-default):
+no fetch has ever stamped it; `present=false` means the project is registered
+but its data is not on disk, because a mirror was never cloned or a clone has
+since moved. A project's policy can be overridden by hand (absent fields mean
+the configured default):
 
 ```jsonc
 {
@@ -460,11 +461,11 @@ default):
 ```
 
 `add_repo` merges into what is already recorded, so re-pointing a project cannot
-reset a `freshnessMode` you set by hand. `sync_repo(project)` fetches immediately
-and follows the project's source (a mirror, or the clone's own remote) — that is
-what makes `manual` usable, and what to call when you want a fresh answer now.
-Unlike a read, `sync_repo` reports a failure as an error rather than answering
-from the cache.
+reset a `freshnessMode` you set by hand. `sync_repo(project)` fetches
+immediately and follows the project's source (a mirror, or the clone's own
+remote). That is what makes `manual` usable, and what to call when you want a
+fresh answer now. Unlike a read, `sync_repo` reports a failure as an error
+rather than answering from the cache.
 
 ## Reading from a clone of your own
 
@@ -472,9 +473,9 @@ from the cache.
 gitlab_add_repo(project="group/sub/repo", local_path="C:\\work\\repo")
 ```
 
-The path is checked there and then — it must exist and be a git repository,
-working clone or bare — so a typo fails at the call that records it. From then on
-every read runs against that clone: nothing is cloned, and nothing is written to
+The path is checked when you call it: it must exist and be a git repository,
+working clone or bare, so a typo fails at the call that records it. From then on
+every read runs against that clone. Nothing is cloned, and nothing is written to
 your working tree, so uncommitted work is untouched. A branch that is not the
 checked-out one is still found through its remote-tracking ref, because that is
 where `git clone` keeps every other branch. A clone with no remote still reads
@@ -489,15 +490,14 @@ gitlab_remove_repo(project="group/sub/repo", delete_mirror=True)
 
 `remove_repo` never deletes a clone: that repository is yours, and the server
 only ever deletes inside its own `mirrors/` directory. Forgetting a
-mirror-backed project does not stick, because the next read registers it again;
-forgetting a *local* registration does, and is how a project goes back to being
-read from a mirror.
+mirror-backed project does not stick, because the next read registers it again.
+Forgetting a *local* registration does stick, and is how a project goes back to
+being read from a mirror.
 
 ## Troubleshooting
 
-A failed read explains itself: the cause, a hint when the failure is one we
-recognise, and git's own output as evidence (`git said: …`). No extra logging is
-needed to find out what happened.
+A failed read explains itself: the cause, a hint when we recognise the failure,
+and git's own output as evidence (`git said: …`). No extra logging is needed.
 
 | What you see | What it means |
 |---|---|
@@ -508,7 +508,7 @@ needed to find out what happened.
 | `[refresh failed: …]` in a result | The source could not be refreshed, so the answer came from the cache as of `synced_at`. The note says why; the causes are the same as for a failed read. |
 | *The registered clone at … is not a usable git repository* | The path recorded by `add_repo` has been moved, deleted or emptied. Run `add_repo` again with the current path, or `remove_repo` to go back to a mirror. |
 | *The registered clone at … has no remote to fetch from* | The clone has no remote configured, so a ref it does not already hold cannot be fetched. Everything it does hold still reads. |
-| `search` finds nothing, although you can see the text | Matching is literal and one argument: `foo\|bar` means that text, not `foo` or `bar` — pass `regex=true` for alternation. A plain pathspec's `**` needs a directory level (`src/**/*.tsx` misses `src/index.tsx`; use `:(glob)src/**/*.tsx`). |
+| `search` finds nothing, although you can see the text | Matching is literal and takes one argument: `foo\|bar` means that text, not `foo` or `bar`. Pass `regex=true` for alternation. A plain pathspec's `**` needs a directory level (`src/**/*.tsx` misses `src/index.tsx`; use `:(glob)src/**/*.tsx`). |
 | `pickaxe` lists no commits for text you can see | It reports commits whose diff *changed how many times* the text appears (`git log -S`), so text unchanged since the root commit, or brought in by a merge git does not diff, has no commit to list. Matching is literal and case-insensitive; `case_sensitive=true` follows the case exactly. |
 | A link is refused: `URL host "…" does not match GITLAB_HOST ("…")` | The link belongs to another GitLab instance. Use a link from the instance `GITLAB_HOST` names; the server will not read a same-named project from elsewhere. |
 | A link is refused: *is a file link; use get_file for it* (or *directory*, *commit*, *history*) | The link went to a tool that does not read it. Each kind has one reader: blob/raw/blame → `get_file` (or `blame`), tree → `list_tree`, `/-/commit/` → `get_commit`, `/-/commits/` → `log`. `parse_gitlab_url` says what a link names if it is unclear. |
@@ -532,13 +532,15 @@ The first read of a project also clones it, so it is slow exactly once.
   token fails fast instead of prompting or hanging.
 - Refs and paths beginning with `-` are rejected to prevent argument injection.
 - Git is invoked with an argument array and `shell: false`.
+- [SECURITY.md](SECURITY.md) has the longer account: what the token can reach,
+  what the server writes to disk, and the risks it cannot remove.
 
 ## Read more
 
-- [How it works](docs/internals.md) — where content comes from, freshness, and
+- [How it works](docs/internals.md): where content comes from, freshness, and
   the read-only guarantee.
-- [Development](docs/development.md) — build, test, releasing and the source
+- [Development](docs/development.md): build, test, releasing and the source
   layout.
-- [Plan](docs/plan.md) — the design decisions and what is next.
-- [History](docs/history.md) — milestones, findings, and the evidence from live
+- [Plan](docs/plan.md): the design decisions and what is next.
+- [History](docs/history.md): milestones, findings, and the evidence from live
   checks.
