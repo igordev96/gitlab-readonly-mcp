@@ -13,7 +13,7 @@ from a clone of your own when you register one.
 The install is one command, with no checkout and no build:
 
 ```powershell
-npm install -g https://github.com/igordev96/gitlab-readonly-mcp/releases/download/v0.10.1/gitlab-readonly-mcp-0.10.1.tgz
+npm install -g gitlab-readonly-mcp
 ```
 
 [Install notes](#install): Windows, `nvm`, the form that needs no install at all,
@@ -82,46 +82,58 @@ git's strengths. Without Advanced Search, the REST API is weak at most of them.
 
 ## Install
 
-Install the tarball attached to the [latest
-release](https://github.com/igordev96/gitlab-readonly-mcp/releases/latest). No
-checkout, no build, no npm account:
+From [npm](https://www.npmjs.com/package/gitlab-readonly-mcp):
 
 ```powershell
-npm install -g https://github.com/igordev96/gitlab-readonly-mcp/releases/download/v0.10.1/gitlab-readonly-mcp-0.10.1.tgz
+npm install -g gitlab-readonly-mcp
+```
+
+If the machine cannot reach the npm registry, install the tarball attached to
+the [latest
+release](https://github.com/igordev96/gitlab-readonly-mcp/releases/latest)
+instead. No checkout, no build, no registry:
+
+```powershell
+npm install -g https://github.com/igordev96/gitlab-readonly-mcp/releases/download/v0.11.0/gitlab-readonly-mcp-0.11.0.tgz
 ```
 
 Each release carries `SHA256SUMS` beside the tarball if you want to check the
-download before installing it. The package is not on npm (`private: true`), so
-`npx gitlab-readonly-mcp` resolves only on a machine that has already installed
-it. `npx` checks `PATH` before the registry, which is why it can appear to work
-and then fail with a 404 elsewhere. The **Source code** archives GitHub attaches
-to a release are repository snapshots without `dist/`, so they install nothing.
+download before installing it. The **Source code** archives GitHub attaches to a
+release are repository snapshots without `dist/`, so they install nothing.
 
 To work on the server instead, build the tarball from your checkout:
 
 ```powershell
 npm install
-npm pack --pack-destination .          # gitlab-readonly-mcp-0.10.1.tgz
-npm install -g .\gitlab-readonly-mcp-0.10.1.tgz
+npm pack --pack-destination .          # gitlab-readonly-mcp-0.11.0.tgz
+npm install -g .\gitlab-readonly-mcp-0.11.0.tgz
 ```
 
 Either way, `gitlab-readonly-mcp` lands on `PATH` and speaks MCP on stdio from
-any directory. To upgrade, install the newer release's tarball. To uninstall,
-`npm rm -g gitlab-readonly-mcp`.
+any directory. To upgrade, `npm install -g gitlab-readonly-mcp@latest`, or
+install the newer release's tarball.
+
+To uninstall, `npm rm -g gitlab-readonly-mcp`.
 
 Under `nvm`, global packages live inside the active Node version, so switching
 versions hides the command until you reinstall it.
 
-**Without a global install.** Point `npx` at the release tarball and it runs
-from npm's cache:
+**Without a global install.** `npx` runs the published package from npm's cache:
 
 ```powershell
-npx -y --package https://github.com/igordev96/gitlab-readonly-mcp/releases/download/v0.10.1/gitlab-readonly-mcp-0.10.1.tgz gitlab-readonly-mcp
+npx -y gitlab-readonly-mcp
+```
+
+On a machine with no registry access, point `npx` at the release tarball
+instead:
+
+```powershell
+npx -y --package https://github.com/igordev96/gitlab-readonly-mcp/releases/download/v0.11.0/gitlab-readonly-mcp-0.11.0.tgz gitlab-readonly-mcp
 ```
 
 The first start downloads it; later starts take about a second. In a client
-config those are the same arguments:
-`"command": ["npx", "-y", "--package", "<tarball URL>", "gitlab-readonly-mcp"]`.
+config the npm form is `"command": ["npx", "-y", "gitlab-readonly-mcp"]`; the
+tarball form adds `--package <tarball URL>` before the name.
 
 ## Configuration
 
@@ -178,10 +190,10 @@ is launched from, not this project. If the bare name does not resolve on your
 machine, `npm prefix -g` gives the prefix;
 `<prefix>\gitlab-readonly-mcp.cmd` is the same package by absolute path.
 
-`["npx", "-y", "gitlab-readonly-mcp"]` also works, but only after the install:
-`npx` finds the binary on `PATH` and never reaches the registry. Without the
-install the command fails with a 404 and the client shows a server with no
-tools; [Install](#install) has the form that needs no install at all.
+`["npx", "-y", "gitlab-readonly-mcp"]` also works, installed or not: `npx` uses
+the binary on `PATH` when there is one, and otherwise downloads the package from
+npm. If the machine cannot reach the registry, use the tarball form from
+[Install](#install).
 
 The tools appear as `gitlab_<tool>`, such as `gitlab_get_file` and
 `gitlab_log`. All sixteen are listed below.
@@ -191,7 +203,7 @@ The tools appear as `gitlab_<tool>`, such as `gitlab_get_file` and
 Cursor reads MCP servers from a `mcpServers` object, in `.cursor/mcp.json` for
 one project or `~/.cursor/mcp.json` for every project
 (`%USERPROFILE%\.cursor\mcp.json` on Windows). It starts a command you have
-installed, or the `npx --package` form from [Install](#install) if you have not.
+installed, or `npx -y gitlab-readonly-mcp` if you have not.
 
 ```jsonc
 {
@@ -220,10 +232,11 @@ never appears and `MCP Logs` is the only place that says so:
 ```
 
 Once the package is installed, `"command": "gitlab-readonly-mcp"` is equivalent
-to the `npx` form on every platform. `npx` only adds a wrapper process that
-resolves the same binary on `PATH`. Without the install, none of these work; use
-the `--package` form from [Install](#install) instead, where `args` becomes
-`["-y", "--package", "<tarball URL>", "gitlab-readonly-mcp"]`.
+to the `npx` form on every platform. `npx` adds a wrapper process that resolves
+the same binary, from `PATH` when it is installed and from the npm registry when
+it is not. If the machine cannot reach the registry, use the `--package` form
+from [Install](#install) instead, where `args` becomes `["-y", "--package",
+"<tarball URL>", "gitlab-readonly-mcp"]`.
 
 Quit Cursor completely and reopen it; a window reload is not always enough. The
 server then shows under **Settings → MCP**, and anything it printed on the way
