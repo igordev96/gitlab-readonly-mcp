@@ -3,6 +3,24 @@
   "version": "0.10.1",
   "private": true,
   "description": "Read-only, git-backed MCP server for a self-managed GitLab",
+  "keywords": [
+    "ai-agents",
+    "developer-tools",
+    "git",
+    "gitlab",
+    "mcp",
+    "model-context-protocol",
+    "read-only"
+  ],
+  "homepage": "https://github.com/igordev96/gitlab-readonly-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/igordev96/gitlab-readonly-mcp/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/igordev96/gitlab-readonly-mcp.git"
+  },
   "bin": {
     "gitlab-readonly-mcp": "dist/index.js"
   },
