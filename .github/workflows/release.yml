@@ -25,6 +25,9 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
+      # Trusted publishing: npm exchanges this OIDC token for a short-lived
+      # publish credential, so no npm token is stored anywhere.
+      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -34,6 +37,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+          registry-url: https://registry.npmjs.org
 
       - name: The tag must name the version package.json declares
         run: |
@@ -88,6 +92,22 @@ jobs:
           sha256sum "${{ steps.pack.outputs.tarball }}" > SHA256SUMS
           cat SHA256SUMS
 
+      # npm rejects a version that already exists. Two cases reach this step
+      # with one: the first version of a new package, which npm only lets a
+      # human publish because trusted publishing needs the name to exist, and a
+      # rerun after a later step failed. Treating "already published" as done
+      # makes both harmless instead of turning them into a red build.
+      - name: Publish to npm
+        run: |
+          set -euo pipefail
+          name="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json','utf8')).name")"
+          version="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json','utf8')).version")"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already on npm; skipping"
+            exit 0
+          fi
+          npm publish "${{ steps.pack.outputs.tarball }}" --provenance
+
       # Create and upload in two steps so a failed upload can be retried by
       # re-running this job; --clobber makes the second attempt harmless.
       - name: Publish the release
@@ -98,12 +118,20 @@ jobs:
           tag="$GITHUB_REF_NAME"
           tarball="${{ steps.pack.outputs.tarball }}"
           url="https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$tarball"
+          name="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json','utf8')).name")"
+          version="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json','utf8')).version")"
 
           gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
             -f tag_name="$tag" --jq .body > generated.md
 
           {
             echo "## Install"
+            echo
+            echo '```'
+            echo "npm install -g $name@$version"
+            echo '```'
+            echo
+            echo "Or install the tarball attached to this release:"
             echo
             echo '```'
             echo "npm i -g $url"

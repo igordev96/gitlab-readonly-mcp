@@ -680,13 +680,11 @@ Deferred deliberately, so nobody re-litigates it by accident:
   `npm install`. CI is the better gate; see below.
   commitlint is the only piece with standalone value, because `AGENTS.md`
   already requires Conventional Commits.
-- **A registry or a published package.** `bin` plus a tarball removes the
-  absolute path from every config without putting a second credential on every
-  machine; a private registry adds only version resolution. A release asset
-  carries the tarball (see *Releases*), so neither is needed *for a personal
-  tool*. Publishing to npm is step 3 of the rollout in §10, and it changes that
-  answer: a package on a registry is found by people who never read this
-  repository.
+- **A private registry.** `bin` plus a tarball removes the absolute path from
+  every config without putting a second credential on every machine. A package
+  on the public npm registry is step 3 of the rollout in §10: it is found by
+  people who never read this repository. A private registry still adds only
+  version resolution and another credential.
 
 Formatting is enforced on push: the CI job below runs `format:check`. Locally it
 stays voluntary, and a reformat still arrives as its own commit — never inside a
@@ -759,9 +757,15 @@ see *Releases*, which repeats the gate on that commit before uploading anything.
 
 ### Releases
 
-`.github/workflows/release.yml` runs when a `vX.Y.Z` tag is pushed, and attaches
-the packed tarball to a GitHub release. That is what makes the install one line
-for someone with no checkout and no npm account:
+`.github/workflows/release.yml` runs when a `vX.Y.Z` tag is pushed, publishes
+the packed tarball to npm, and attaches the same tarball to a GitHub release.
+That is what makes the install one line:
+
+```powershell
+npm install -g gitlab-readonly-mcp
+```
+
+The release tarball remains the fallback for a machine with no registry access:
 
 ```powershell
 npm install -g https://github.com/igordev96/gitlab-readonly-mcp/releases/download/vX.Y.Z/gitlab-readonly-mcp-X.Y.Z.tgz
@@ -792,14 +796,23 @@ Decisions rather than template defaults:
   read-only token.
 - **Publishing is idempotent**: create the release if it is missing, then
   `gh release upload --clobber`. A failed upload is fixed by re-running the job,
-  not by deleting a release by hand.
+  not by deleting a release by hand. The npm step treats an existing version as
+  done for the same reason.
 - **Notes are a fixed preamble plus generated notes.** The preamble carries the
-  install command and the one trap: GitHub's *Source code* archives have no
-  `dist/` and are not installable. Generated notes list merged pull requests
-  only, so on this repository that section is a compare link.
+  npm install command, the tarball fallback, and the one trap: GitHub's *Source
+  code* archives have no `dist/` and are not installable. Generated notes list
+  merged pull requests only, so on this repository that section is a compare
+  link.
+- **Trusted publishing, not a stored token.** The job exchanges a GitHub OIDC
+  token for a short-lived npm credential (`id-token: write`), so no npm token
+  lives in the repository or in an Actions secret.
+- **The first publish is manual.** npm only offers trusted publishing once the
+  package exists, so the version that creates the name is published by hand and
+  the tag job skips it. Every version after that comes from CI with provenance.
 
-Not covered: signing, provenance, and a registry publish — the last is argued
-down under *Tooling*. Any of the three is a new decision, not a step.
+Not covered: signing. Provenance is covered from the second version onward,
+because trusted publishing supplies it; the hand-published first version has
+none.
 
 ### OpenCode wiring (Phase 1)
 
@@ -876,7 +889,7 @@ seconds whether to stop reading.
 |---|---|---|---|
 | 1 | A first screen that answers "is this for me?" | The README: who this is for, what it is not, the install line above the fold, and a link to the evidence in `history.md` | A reader who should *not* use it can decide that in fifteen seconds |
 | 2 | A demo, not a description | `docs/demo.md`: one real session, reusing the sanitized output the live checks already produced | The value is visible without installing anything |
-| 3 | Publish to npm | `"private": true` goes; `repository`, `homepage`, `keywords` arrive; the release workflow publishes the tarball with provenance | `npx gitlab-readonly-mcp` works on a clean machine |
+| 3 | Publish to npm | `"private": true` goes; the README installs from npm; the release workflow publishes the tarball with OIDC provenance, and the first version by hand | `npx gitlab-readonly-mcp` works on a clean machine |
 | 4 | Be findable | The MCP registry, the aggregators, one awesome-list entry, and a release whose notes lead with the install | Listed in at least two indexes |
 | 5 | `SECURITY.md` and honest limits | The threat model, what is guaranteed, and the residual risks named below | An admin can read one page and say yes |
 
@@ -888,10 +901,10 @@ access, no HTTP transport, and no rewrite of `repoStore.ts` — 3,028 lines in
 one file is the largest debt in the tree, and it is the riskiest change
 available to a project with no users yet. It waits for a stranger's issue.
 
-**Open decisions, both the owner's.** Whether the npm publish runs from CI
-with provenance (`id-token: write` plus an `NODE_AUTH_TOKEN` secret) or by
-hand, and whether the version that carries the new install instructions is
-`0.11.0`. Neither is needed for steps 1, 2 or 5.
+**Decided.** The npm publish runs from CI with provenance, through trusted
+publishing: `id-token: write` and no stored token. The first version is
+published by hand because npm only offers trusted publishing once the name
+exists. The version that carries the new install instructions is `0.11.0`.
 
 **The residual risk step 5 has to state.** The token reaches git as
 `-c http.extraheader=…`, which puts it in git's **command line** for the life

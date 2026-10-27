@@ -157,13 +157,48 @@ keeps the two honest: it fails when a pinned version is not the one
 first heading. Bump the version and the README in the same commit.
 
 Pushing the tag publishes the release. `release.yml` re-runs the gate on that
-commit, refuses a tag that disagrees with `package.json` or is not on `main`, and
-uploads the tarball with `SHA256SUMS` (see `plan.md`, *Releases*). Watch that run
-before announcing the version: the log is the release's receipt.
+commit, refuses a tag that disagrees with `package.json` or is not on `main`,
+publishes the tarball to npm, and attaches the same tarball with `SHA256SUMS` to
+the GitHub release (see `plan.md`, *Releases*). Watch that run before announcing
+the version: the log is the release's receipt.
 
-The installed copy is separate from the tag: install the release's tarball URL,
-then restart the MCP server, because a running process keeps the code it started
-with.
+The installed copy is separate from the tag: install
+`gitlab-readonly-mcp@X.Y.Z` (or the release's tarball URL), then restart the MCP
+server, because a running process keeps the code it started with.
+
+### Publishing to npm
+
+`release.yml` publishes the packed tarball with `--provenance`, using trusted
+publishing: the job exchanges a GitHub OIDC token for a short-lived npm
+credential, so no npm token lives in the repository or in an Actions secret. The
+`id-token: write` permission is what makes the exchange possible.
+
+Trusted publishing needs the package to exist, so the first version is published
+by hand, before the tag is pushed:
+
+```powershell
+npm login
+npm run check:pack
+npm pack --pack-destination .
+npm publish .\gitlab-readonly-mcp-X.Y.Z.tgz
+```
+
+The tag job then finds that version on npm, skips its own publish, and creates
+the GitHub release.
+
+For every version after the first, open the package on npmjs.com → Settings →
+Trusted publishing, choose GitHub Actions, and give the repository
+`igordev96/gitlab-readonly-mcp`, the workflow `release.yml`, and **npm publish**
+as an allowed action. Configurations created after September 2026 allow stage
+publishing by default; direct `npm publish` has to be ticked as well.
+
+A new configuration expires after two days unless it completes a publish, so
+create it just before the next tag, not months ahead. Once it is validated, the
+tag does the work.
+
+The workflow skips a version that is already on npm. That covers the first
+manual publish and a rerun after a partial failure; npm rejects a second publish
+of the same version.
 
 ## Adding a tool
 
